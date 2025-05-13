@@ -1,5 +1,8 @@
 <script>
-  var w = window.open();
-  w.alert("exec acchived");
-  alert("stall...");
+  function afterb() {
+    var w = window.open();
+    w.alert("exec acchived");
+  }
+
+  setTimeout(afterb,2000);
 </script>
