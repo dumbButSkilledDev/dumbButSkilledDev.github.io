@@ -3,5 +3,5 @@
   
   var w = window.open();
   w.document.write('<h1>stage 1.5</h1><iframe src="https://dumbbutskilleddev.github.io/stage2.html"></iframe>'); // bug
-  w.eval("var w = window.open();w.document.write('TRIPPLE--TRY');");
+  w.eval("var w = window.open();w.document.write('TRIPPLE--TRY');"); // (were evaluting under w's context)
 </script>
