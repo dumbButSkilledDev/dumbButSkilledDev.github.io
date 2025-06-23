@@ -1,7 +1,11 @@
-<script>
- // stage 1
-  
-  var w = window.open();
-  w.document.write('<h1>stage 1.5</h1><iframe src="https://dumbbutskilleddev.github.io/stage2.html"></iframe>'); // bug
-  w.eval("var w = window.open();w.document.write('TRIPPLE--TRY');"); // (were evaluting under w's context)
-</script>
+<!DOCTYPE html>
+<html>
+<head>
+    <title>PS4 11.02 Exploit</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="log">Initializing exploit...</div>
+    <script type="module" src="main.js"></script>
+</body>
+</html>
