@@ -37,7 +37,7 @@ async function initMemory(log) {
         dv = new DataView(buf);
 
         // Check if we can read/write to the backing store
-        var obj = fakeobj(0x100000000n + BigInt(BS_OFFSET));
+        var obj = fakeobj(BigInt(0x100000000n) + BigInt(BS_OFFSET));
         bsPtrAddr = addrof(obj);
 
         // Test read/write
