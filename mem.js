@@ -33,14 +33,19 @@ async function initMemory(log) {
     ];
     const bufferSizes = [0x100, 0x200, 0x1000];
     const maxOffset = 0x10000n;
+    const yieldInterval = 0x1000n;  // yield to event loop every 0x1000 bytes
     let tested = 0;    
     for (const size of bufferSizes) {
         log(`Trying buffer size ${size} bytes`);
         for (const pattern of patterns) {
             log(`Testing pattern 0x${pattern.toString(16)}`);
             for (let off = 0n; off < maxOffset; off += 8n) {
-                if ((off & 0xFFn) === 0n) {
+                // periodic log and yield
+                if (off % 0x100n === 0n) {
                     log(`Offset scan at 0x${off.toString(16)} (${tested} tests done)`);
+                }
+                if (off % yieldInterval === 0n) {
+                    await new Promise(res => setTimeout(res, 0));
                 }
                 tested++;
                 // Allocate buffer and DataView

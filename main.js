@@ -6,7 +6,10 @@ function log(msg) {
     void logDiv.offsetHeight;
 }
 
-window.onload = async function() {
+// Kick off the exploit without blocking page load
+;(async function startExploit() {
+    // Yield to the browser for initial render
+    await new Promise(resolve => setTimeout(resolve, 100));
     log('Starting exploit...');
     try {
         await runBaseSetup(log);
@@ -25,4 +28,4 @@ window.onload = async function() {
     } catch(e) {
         log('Exploit failed: ' + e);
     }
-};
+})();
