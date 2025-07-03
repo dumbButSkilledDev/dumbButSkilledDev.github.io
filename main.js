@@ -12,7 +12,7 @@ window.onload = async function() {
         await runExploit(log);
         log('Exploit complete!');
 
-        setupMemory(log);
+        initMemory(log);
 
         // Example usage of primitives:
         let addr = addrof({});
