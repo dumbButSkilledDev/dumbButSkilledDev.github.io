@@ -9,10 +9,12 @@ function log(msg) {
 window.onload = async function() {
     log('Starting exploit...');
     try {
-        await runExploit(log);
-        log('Exploit complete!');
+        await runBaseSetup(log);
+        log('=== preparing memory primitives ===');
 
-        initMemory(log);
+        await initMemory(log);
+
+        log('Memory primitives initialized successfully.');
 
         // Example usage of primitives:
         let addr = addrof({});
