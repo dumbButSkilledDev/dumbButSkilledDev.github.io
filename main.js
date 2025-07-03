@@ -11,6 +11,9 @@ window.onload = async function() {
     try {
         await runExploit(log);
         log('Exploit complete!');
+
+        setupMemory(log);
+
         // Example usage of primitives:
         let addr = addrof({});
         let fake = fakeobj(addr);

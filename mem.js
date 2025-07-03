@@ -17,14 +17,6 @@ async function initMemory(log) {
     initialized = true;
 }
 
-function addrof(obj) {
-    return addrof(obj);
-}
-
-function fakeobj(addr) {
-    return fakeobj(addr);
-}
-
 function read64(addr) {
     if (!initialized) throw new Error('mem.js not initialized');
     // Point backing store to target address
