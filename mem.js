@@ -28,6 +28,7 @@ async function initMemory(log) {
     initialized = true;
     
     for (let i = 0; i < 0x100; i++) {
+        log('testing...');
         if (i % 8 === 0) {
             log(`finding backing store: ${i}/256`);
         }
