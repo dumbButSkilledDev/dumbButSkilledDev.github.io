@@ -30,10 +30,11 @@ async function initMemory(log) {
     const maxOffset = 0x200n;
     const testPattern = 0xdeadbeefcafebaben;
     while (start < maxOffset) {
+        log(`Searching for BS offset starting at 0x${start.toString(16)}`);
+        let candidate;
         try {
-            // Find next candidate offset >= start
-            const candidate = findBackingStoreOffset(log, start);
-            log(`Candidate BS offset: 0x${candidate.toString(16)}`);
+            candidate = findBackingStoreOffset(log, start);
+            log(`Found offset candidate: 0x${candidate.toString(16)}`);
             // Setup test buffer
             buf = new ArrayBuffer(0x100);
             dv = new DataView(buf);
