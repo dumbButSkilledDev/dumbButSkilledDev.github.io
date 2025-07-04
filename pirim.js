@@ -18,8 +18,13 @@ function itof(val) {
 
 function pirim_stage1() {
     leak = leakScope();
-    log("leaked scope: " + leak);
+    if (leak === null) {
+        log("Stage 1 failed: no leak returned");
+    } else {
+        log("Stage 1 success: leaked object is " + leak);
+    }
 }
+
 
 function pirim_stage2() {
     arr = [leak];
